@@ -2,6 +2,7 @@
 
 import gc
 import os
+import time
 
 import mlx.core as mx
 import numpy as np
@@ -50,11 +51,14 @@ class MDXCSeparator(CommonSeparator):
 
     def separate(self, audio_file_path, custom_output_names=None):
         """Separate audio file into stems using MDXC/Roformer MLX."""
+        self.reset_perf_metrics()
         self.audio_file_path = audio_file_path
         self.audio_file_base = os.path.splitext(os.path.basename(audio_file_path))[0]
 
         self.logger.debug(f"Preparing mix for {self.audio_file_path}...")
+        t0 = time.perf_counter()
         mix = self.prepare_mix(self.audio_file_path)
+        self.add_perf_time("decode_s", time.perf_counter() - t0)
 
         # Auto-enable segment size override for short audio
         audio_duration_seconds = mix.shape[1] / self.sample_rate
@@ -66,9 +70,13 @@ class MDXCSeparator(CommonSeparator):
             )
 
         self.logger.debug("Normalizing mix before demixing...")
+        t0 = time.perf_counter()
         mix = normalize(wave=mix, max_peak=self.normalization_threshold, min_peak=self.amplification_threshold)
+        self.add_perf_time("preprocess_s", time.perf_counter() - t0)
 
+        t0 = time.perf_counter()
         source = self._demix_mlx(mix)
+        self.add_perf_time("inference_s", time.perf_counter() - t0)
         self.logger.debug("Demixing completed.")
 
         # Build output files
@@ -89,10 +97,12 @@ class MDXCSeparator(CommonSeparator):
                 if self.output_single_stem and self.output_single_stem.lower() != stem_name.lower():
                     continue
 
+                t0 = time.perf_counter()
                 stem_source = source[stem_name]
                 # Transpose to (frames, channels) for write_audio
                 if stem_source.ndim == 2 and stem_source.shape[0] == 2 and stem_source.shape[1] > 2:
                     stem_source = stem_source.T
+                self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
                 stem_output_path = self.get_stem_output_path(stem_name, custom_output_names)
                 self.logger.info(f"Writing stem '{stem_name}' to {stem_output_path}")
@@ -105,9 +115,11 @@ class MDXCSeparator(CommonSeparator):
                 output_files.append(full_path)
         else:
             # Single source output
+            t0 = time.perf_counter()
             stem_source = source
             if stem_source.ndim == 2 and stem_source.shape[0] == 2 and stem_source.shape[1] > 2:
                 stem_source = stem_source.T
+            self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
             stem_output_path = self.get_stem_output_path(self.primary_stem_name, custom_output_names)
             self.logger.info(f"Writing stem '{self.primary_stem_name}' to {stem_output_path}")
@@ -224,10 +236,6 @@ class MDXCSeparator(CommonSeparator):
 
         del result, counter, inferenced_outputs, mix_mlx
         gc.collect()
-        try:
-            mx.metal.clear_cache()
-        except Exception:
-            pass
 
         # Build output dictionary
         if num_stems > 1:

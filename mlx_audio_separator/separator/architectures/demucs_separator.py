@@ -1,7 +1,9 @@
 """Demucs stem separator using MLX backend via demucs_mlx."""
 
 import os
+import time
 
+import mlx.core as mx
 import numpy as np
 
 from mlx_audio_separator.separator.common_separator import CommonSeparator
@@ -95,30 +97,42 @@ class DemucsSeparator(CommonSeparator):
 
     def separate(self, audio_file_path, custom_output_names=None):
         """Separate audio file into stems using Demucs MLX."""
+        import mlx_audio_io as mac
+
+        self.reset_perf_metrics()
         self.audio_file_path = audio_file_path
         self.audio_file_base = os.path.splitext(os.path.basename(audio_file_path))[0]
 
         self.logger.info(f"Separating {audio_file_path} with Demucs MLX model {self._demucs_model_name}")
 
-        # Use demucs_mlx to separate
-        mix_wav, stems = self._demucs_separator.separate_audio_file(audio_file_path)
+        # Decode (kept in MLX tensors to avoid host round-trips).
+        t0 = time.perf_counter()
+        audio_mx, sr = mac.load(str(audio_file_path), dtype="float32")
+        if sr != self._demucs_separator.samplerate:
+            audio_mx, sr = mac.load(str(audio_file_path), sr=self._demucs_separator.samplerate, dtype="float32")
+        wav_mx = audio_mx.T if audio_mx.ndim == 2 else mx.stack([audio_mx, audio_mx], axis=0)
+        self.add_perf_time("decode_s", time.perf_counter() - t0)
+
+        # Inference.
+        t0 = time.perf_counter()
+        _, stems = self._demucs_separator.separate_tensor(wav_mx, return_mx=True)
+        self.add_perf_time("inference_s", time.perf_counter() - t0)
 
         self.logger.info(f"Demucs separation complete. Stems: {list(stems.keys())}")
 
         # Write output files
         output_files = []
         for stem_name, stem_data in stems.items():
-            # stem_data shape is (channels, time) as numpy array
-            stem_np = np.asarray(stem_data)
+            # Skip conversion/write work for filtered stems.
+            if self.output_single_stem is not None and stem_name.lower() != self.output_single_stem.lower():
+                continue
 
-            # Transpose to (time, channels) for write_audio
+            # Postprocess host transfer per emitted stem only.
+            t0 = time.perf_counter()
+            stem_np = np.asarray(stem_data)
             if stem_np.ndim == 2:
                 stem_np = stem_np.T
-
-            # Check if we should skip this stem
-            if self.output_single_stem is not None:
-                if stem_name.lower() != self.output_single_stem.lower():
-                    continue
+            self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
             stem_output_path = self.get_stem_output_path(stem_name, custom_output_names)
             self.logger.info(f"Writing stem '{stem_name}' to {stem_output_path}")

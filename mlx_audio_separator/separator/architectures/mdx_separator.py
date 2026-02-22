@@ -1,6 +1,7 @@
 """MDX stem separator using MLX backend."""
 
 import os
+import time
 
 import mlx.core as mx
 import numpy as np
@@ -67,18 +68,25 @@ class MDXSeparator(CommonSeparator):
 
     def separate(self, audio_file_path, custom_output_names=None):
         """Separate audio into primary and secondary stems."""
+        self.reset_perf_metrics()
         self.audio_file_path = audio_file_path
         self.audio_file_base = os.path.splitext(os.path.basename(audio_file_path))[0]
 
         self.logger.debug(f"Preparing mix for {self.audio_file_path}...")
+        t0 = time.perf_counter()
         mix = self.prepare_mix(self.audio_file_path)
+        self.add_perf_time("decode_s", time.perf_counter() - t0)
 
         self.logger.debug("Normalizing mix...")
+        t0 = time.perf_counter()
         peak = np.abs(mix).max()
         mix = normalize(wave=mix, max_peak=self.normalization_threshold, min_peak=self.amplification_threshold)
+        self.add_perf_time("preprocess_s", time.perf_counter() - t0)
 
         # Demix
+        t0 = time.perf_counter()
         source = self.demix(mix) * peak
+        self.add_perf_time("inference_s", time.perf_counter() - t0)
 
         self.primary_source = source.T
 
@@ -87,11 +95,17 @@ class MDXSeparator(CommonSeparator):
         # Compute secondary source
         if self.invert_using_spec:
             self.logger.debug("Computing secondary stem using spectral inversion...")
+            t0 = time.perf_counter()
             raw_mix = self.demix(mix, is_match_mix=True)
+            self.add_perf_time("inference_s", time.perf_counter() - t0)
+            t0 = time.perf_counter()
             self.secondary_source = self._invert_stem(raw_mix, self.primary_source * self.compensate)
+            self.add_perf_time("postprocess_s", time.perf_counter() - t0)
         else:
             self.logger.debug("Computing secondary stem by subtraction...")
+            t0 = time.perf_counter()
             self.secondary_source = (-self.primary_source * self.compensate) + mix.T
+            self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
         # Write secondary stem
         if not self.output_single_stem or self.output_single_stem.lower() == self.secondary_stem_name.lower():

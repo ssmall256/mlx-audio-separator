@@ -6,6 +6,7 @@ processing with windowed inference.
 """
 
 import os
+import time
 
 import mlx.core as mx
 import numpy as np
@@ -65,28 +66,37 @@ class VRSeparator(CommonSeparator):
 
     def separate(self, audio_file_path, custom_output_names=None):
         """Separate audio into primary and secondary stems."""
+        self.reset_perf_metrics()
         self.audio_file_path = audio_file_path
         self.audio_file_base = os.path.splitext(os.path.basename(audio_file_path))[0]
 
         self.logger.debug(f"Starting VR separation for {audio_file_path}")
 
         # Load and convert to spectrogram
+        t0 = time.perf_counter()
         X_spec = self._loading_mix()
+        self.add_perf_time("preprocess_s", time.perf_counter() - t0)
 
         # Run inference
+        t0 = time.perf_counter()
         y_spec, v_spec = self._inference_vr(X_spec, self.aggressiveness)
+        self.add_perf_time("inference_s", time.perf_counter() - t0)
 
         # Sanitize
+        t0 = time.perf_counter()
         y_spec = np.nan_to_num(y_spec, nan=0.0, posinf=0.0, neginf=0.0)
         v_spec = np.nan_to_num(v_spec, nan=0.0, posinf=0.0, neginf=0.0)
+        self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
         output_files = []
 
         # Save primary stem
         if not self.output_single_stem or self.output_single_stem.lower() == self.primary_stem_name.lower():
+            t0 = time.perf_counter()
             primary_source = self._spec_to_wav(y_spec).T
             if self.model_samplerate != 44100:
                 primary_source = self._resample(primary_source.T, self.model_samplerate, 44100).T
+            self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
             stem_path = self.get_stem_output_path(self.primary_stem_name, custom_output_names)
             self.logger.info(f"Writing {self.primary_stem_name} stem to {stem_path}")
@@ -95,9 +105,11 @@ class VRSeparator(CommonSeparator):
 
         # Save secondary stem
         if not self.output_single_stem or self.output_single_stem.lower() == self.secondary_stem_name.lower():
+            t0 = time.perf_counter()
             secondary_source = self._spec_to_wav(v_spec).T
             if self.model_samplerate != 44100:
                 secondary_source = self._resample(secondary_source.T, self.model_samplerate, 44100).T
+            self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
             stem_path = self.get_stem_output_path(self.secondary_stem_name, custom_output_names)
             self.logger.info(f"Writing {self.secondary_stem_name} stem to {stem_path}")
