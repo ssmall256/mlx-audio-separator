@@ -42,6 +42,9 @@ def main():
     info_params.add_argument("--benchmark_skip_download", action="store_true", help="Only benchmark already-downloaded models.")
     info_params.add_argument("--benchmark_resume", action="store_true", help="Resume from previous results, skipping completed models.")
     info_params.add_argument("--benchmark_wait_nominal", action="store_true", help="Wait for nominal thermal state between models.")
+    info_params.add_argument("--benchmark_repeats", type=int, default=3, help="Timed repeats per model (default: %(default)s).")
+    info_params.add_argument("--benchmark_warmup", type=int, default=1, help="Warmup runs per model (default: %(default)s).")
+    info_params.add_argument("--benchmark_profile", action="store_true", help="Include per-phase performance profiles in benchmark output.")
 
     io_params = parser.add_argument_group("Separation I/O Params")
     io_params.add_argument(
@@ -69,6 +72,13 @@ def main():
     common_params.add_argument("--sample_rate", type=int, default=44100, help="Sample rate (default: %(default)s).")
     common_params.add_argument("--chunk_duration", type=float, default=None, help="Split audio into chunks of this duration in seconds.")
     common_params.add_argument("--custom_output_names", type=json.loads, default=None, help='Custom output names in JSON format.')
+    common_params.add_argument("--speed_mode", choices=["default", "latency_safe"], default="default", help="Performance speed profile (default: %(default)s).")
+    common_params.add_argument("--auto_tune_batch", action="store_true", help="Auto-tune batch size for the current model/audio.")
+    common_params.add_argument("--tune_probe_seconds", type=float, default=8.0, help="Probe duration for auto-tuner (default: %(default)s).")
+    common_params.add_argument("--cache_clear_policy", choices=["aggressive", "deferred"], default="aggressive", help="Cache clear policy (default: %(default)s).")
+    common_params.add_argument("--write_workers", type=int, default=1, help="Concurrent stem writer workers (default: %(default)s).")
+    common_params.add_argument("--perf_trace", action="store_true", help="Write per-file performance trace metrics.")
+    common_params.add_argument("--perf_trace_path", default=None, help="JSONL path for performance trace output.")
 
     demucs_params = parser.add_argument_group("Demucs Architecture Parameters")
     demucs_params.add_argument("--demucs_segment_size", type=str, default="Default", help="Segment size (default: %(default)s).")
@@ -161,6 +171,9 @@ def main():
             skip_download=args.benchmark_skip_download,
             wait_nominal=args.benchmark_wait_nominal,
             resume=args.benchmark_resume,
+            repeats=args.benchmark_repeats,
+            warmup=args.benchmark_warmup,
+            profile=args.benchmark_profile,
             list_filter=args.list_filter,
             list_limit=args.list_limit,
             log_level=log_level,
@@ -223,6 +236,15 @@ def main():
             "enable_post_process": args.vr_enable_post_process,
             "post_process_threshold": args.vr_post_process_threshold,
             "high_end_process": args.vr_high_end_process,
+        },
+        performance_params={
+            "speed_mode": args.speed_mode,
+            "auto_tune_batch": args.auto_tune_batch,
+            "tune_probe_seconds": args.tune_probe_seconds,
+            "cache_clear_policy": args.cache_clear_policy,
+            "write_workers": args.write_workers,
+            "perf_trace": args.perf_trace,
+            "perf_trace_path": args.perf_trace_path,
         },
     )
 

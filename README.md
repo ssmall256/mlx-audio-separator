@@ -27,6 +27,12 @@ mlx-audio-separator song.mp3 -m htdemucs_ft.yaml
 
 # List all available models
 mlx-audio-separator --list_models
+
+# Opt-in latency-safe mode with perf trace output
+mlx-audio-separator song.mp3 --speed_mode latency_safe --perf_trace
+
+# Auto-tune batch size for current model/audio (first run probes, then caches)
+mlx-audio-separator song.mp3 --auto_tune_batch --tune_probe_seconds 8
 ```
 
 ### Python API
@@ -51,6 +57,41 @@ print(stems)  # list of output file paths
 | **Total** | **83** | |
 
 Run `mlx-audio-separator --list_models` to see the full list.
+
+## Performance Tuning
+
+The default behavior is unchanged. Use opt-in flags to tune latency:
+
+```bash
+mlx-audio-separator song.mp3 \
+  --speed_mode latency_safe \
+  --cache_clear_policy deferred \
+  --write_workers 2 \
+  --perf_trace \
+  --perf_trace_path ./perf_trace.jsonl
+```
+
+Available performance options:
+
+- `--speed_mode {default,latency_safe}`
+- `--auto_tune_batch`
+- `--tune_probe_seconds <seconds>`
+- `--cache_clear_policy {aggressive,deferred}`
+- `--write_workers <int>`
+- `--perf_trace`
+- `--perf_trace_path <path>`
+
+## Benchmarking
+
+Benchmark now supports warmup/repeat medians and optional phase profiling:
+
+```bash
+mlx-audio-separator \
+  --benchmark song.mp3 \
+  --benchmark_warmup 1 \
+  --benchmark_repeats 3 \
+  --benchmark_profile
+```
 
 ## Requirements
 

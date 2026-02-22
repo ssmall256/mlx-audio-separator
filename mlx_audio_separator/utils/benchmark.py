@@ -8,6 +8,9 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
+from statistics import median
+
+from mlx_audio_separator.utils.performance import clear_mlx_cache
 
 
 def _print_summary_table(results):
@@ -32,7 +35,7 @@ def _print_summary_table(results):
         print(header)
         print("  " + "-" * (len(header) - 2))
 
-        # Sort by separate_time ascending
+        # Sort by median separate time ascending
         for r in sorted(ok_results, key=lambda x: x["separate_time"]):
             print(
                 f"  {r['filename']:<{fn_width}}  {r['arch']:<{arch_width}}"
@@ -127,6 +130,9 @@ def run_benchmark(
     wait_nominal=False,
     skip_download=False,
     resume=False,
+    repeats=3,
+    warmup=1,
+    profile=False,
     list_filter=None,
     list_limit=None,
     log_level=None,
@@ -142,18 +148,21 @@ def run_benchmark(
         wait_nominal: Also wait for thermal state to reach nominal after cooldown.
         skip_download: Only benchmark already-downloaded models.
         resume: Resume from previous results file, skipping completed models.
+        repeats: Number of timed repeats per model (median reported).
+        warmup: Number of untimed warmup runs before repeats.
+        profile: Include per-phase profile metrics when available.
         list_filter: Filter models (passed to get_simplified_model_list).
         list_limit: Limit number of models.
         log_level: Logging level.
         log_formatter: Logging formatter.
     """
-    import mlx.core as mx
-
     from mlx_audio_separator.core import Separator
 
     if not os.path.isfile(audio_file):
         print(f"Error: Audio file not found: {audio_file}")
         sys.exit(1)
+    repeats = max(1, int(repeats))
+    warmup = max(0, int(warmup))
 
     output_dir = output_dir or os.getcwd()
     os.makedirs(output_dir, exist_ok=True)
@@ -203,7 +212,7 @@ def run_benchmark(
 
     print(f"\nBenchmarking {len(work_list)} models against: {audio_file}")
     cooldown_desc = f"{cooldown}s" + (" + wait for nominal thermal" if wait_nominal else "")
-    print(f"Cooldown: {cooldown_desc} | Output: {results_path}\n")
+    print(f"Cooldown: {cooldown_desc} | Repeats: {repeats} | Warmup: {warmup} | Output: {results_path}\n")
 
     # Prepare results data
     results_data = {
@@ -239,6 +248,7 @@ def run_benchmark(
             "arch": info["Type"],
             "load_time": 0.0,
             "separate_time": 0.0,
+            "separate_runs": [],
             "stems": 0,
             "status": "error",
         }
@@ -261,24 +271,43 @@ def run_benchmark(
             sep.load_model(model_filename=filename)
             load_time = time.perf_counter() - t0
 
-            # Separate
-            t0 = time.perf_counter()
-            output_files = sep.separate(audio_file)
-            separate_time = time.perf_counter() - t0
+            # Warmup runs (untimed)
+            for _ in range(warmup):
+                output_files = sep.separate(audio_file)
+                for f in output_files:
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+
+            # Timed runs
+            run_times = []
+            stems = 0
+            perf_samples = []
+            for _ in range(repeats):
+                t0 = time.perf_counter()
+                output_files = sep.separate(audio_file)
+                run_times.append(time.perf_counter() - t0)
+                stems = len(output_files)
+                if profile and sep.last_perf_metrics:
+                    perf_samples.append(dict(sep.last_perf_metrics))
+                for f in output_files:
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+
+            separate_time = median(run_times)
 
             result["load_time"] = round(load_time, 2)
             result["separate_time"] = round(separate_time, 2)
-            result["stems"] = len(output_files)
+            result["separate_runs"] = [round(x, 3) for x in run_times]
+            result["stems"] = stems
+            if perf_samples:
+                result["profile_samples"] = perf_samples
             result["status"] = "ok"
 
-            print(f"load={load_time:.1f}s, separate={separate_time:.1f}s, stems={len(output_files)}")
-
-            # Clean up output stems
-            for f in output_files:
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
+            print(f"load={load_time:.1f}s, separate_med={separate_time:.1f}s, stems={stems}")
 
         except Exception as e:
             result["status"] = f"error: {e}"
@@ -291,10 +320,7 @@ def run_benchmark(
 
         # Cleanup
         gc.collect()
-        try:
-            mx.metal.clear_cache()
-        except Exception:
-            pass
+        clear_mlx_cache()
 
         # Cooldown (skip after last model)
         if i < len(work_list):
