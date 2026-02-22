@@ -163,6 +163,7 @@ def apply_model(
             ], axis=0)
             weight = (weight / mx.max(weight)) ** transition_power
             _WEIGHT_CACHE[cache_key] = weight
+        weight_view = weight.reshape(1, 1, 1, -1)
 
         progress_bar = None
         if progress_enabled:
@@ -172,13 +173,21 @@ def apply_model(
         # --- BATCHING STATE ---
         batch_inputs = []
         batch_indices = []
+        eval_flush_interval = 4
+        pending_updates = 0
         if hasattr(model, "valid_length"):
             std_valid_len = model.valid_length(segment_length)
         else:
             std_valid_len = segment_length
 
+        def maybe_eval(force=False):
+            nonlocal pending_updates
+            if force or pending_updates >= eval_flush_interval:
+                mx.eval(out, sum_weight)
+                pending_updates = 0
+
         def flush_batch():
-            nonlocal batch_inputs, batch_indices, out, sum_weight
+            nonlocal batch_inputs, batch_indices, out, sum_weight, pending_updates
             if not batch_inputs:
                 return
 
@@ -202,15 +211,16 @@ def apply_model(
                 offset = offsets[idx]
                 end = offset + segment_length
 
-                out = out.at[:, :, :, offset:end].add(weight.reshape(1, 1, 1, -1) * chunk_out)
+                out = out.at[:, :, :, offset:end].add(weight_view * chunk_out)
                 sum_weight = sum_weight.at[offset:end].add(weight)
+                pending_updates += 1
 
                 if progress_bar is not None:
                     progress_bar.update(1)
 
             batch_inputs = []
             batch_indices = []
-            mx.eval(out, sum_weight)
+            maybe_eval()
 
         try:
             for i, offset in enumerate(offsets):
@@ -241,14 +251,17 @@ def apply_model(
                     chunk_out = center_trim(chunk_out, this_chunk_len)
 
                     end = offset + this_chunk_len
-                    w = weight[:this_chunk_len].reshape(1, 1, 1, -1)
+                    weight_slice = weight[:this_chunk_len]
+                    w = weight_slice.reshape(1, 1, 1, -1)
                     out = out.at[:, :, :, offset:end].add(w * chunk_out)
-                    sum_weight = sum_weight.at[offset:end].add(weight[:this_chunk_len])
-                    mx.eval(out, sum_weight)
+                    sum_weight = sum_weight.at[offset:end].add(weight_slice)
+                    pending_updates += 1
+                    maybe_eval()
                     if progress_bar is not None:
                         progress_bar.update(1)
 
             flush_batch()
+            maybe_eval(force=True)
         finally:
             if progress_bar is not None:
                 progress_bar.close()
