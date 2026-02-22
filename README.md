@@ -91,6 +91,7 @@ Current `latency_safe` preset recommendations (strict output-equivalent path, op
 Deterministic equivalence checks use strict pass/fail gating for `MDXC`, `MDX`, and `VR` by default.
 `Demucs` is reported as informational unless strict Demucs gating is explicitly enabled.
 When equivalence utilities run, they automatically enable deterministic fused-kernel mode for reproducible Demucs comparisons.
+In deterministic mode, Demucs keeps fused `GroupNorm+GELU`, enables strict forward eval barriers, disables fused iSTFT and Wiener `vmap` parallelization, and forces deterministic overlap-add accumulation to reduce run-to-run drift.
 
 ## Benchmarking
 

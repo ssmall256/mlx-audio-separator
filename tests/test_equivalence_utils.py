@@ -126,3 +126,29 @@ def test_temporary_env_restores_missing_value():
     finally:
         if previous is not None:
             os.environ[key] = previous
+
+
+def test_run_model_equivalence_sets_istft_unfused_for_determinism(monkeypatch):
+    observed: dict[str, str | None] = {}
+
+    def fake_separator_from_kwargs(*args, **kwargs):
+        observed["det_fused"] = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED")
+        observed["istft_allow_fused"] = os.environ.get("MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED")
+        observed["wiener_use_vmap"] = os.environ.get("MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP")
+        observed["strict_eval"] = os.environ.get("MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL")
+        raise RuntimeError("stop after env capture")
+
+    monkeypatch.setattr(eq, "_separator_from_kwargs", fake_separator_from_kwargs)
+
+    result = eq.run_model_equivalence(
+        model_filename="htdemucs.yaml",
+        corpus=["/tmp/fake.wav"],
+        baseline_separator_kwargs={},
+        candidate_separator_kwargs={},
+    )
+
+    assert observed["det_fused"] == "1"
+    assert observed["istft_allow_fused"] == "0"
+    assert observed["wiener_use_vmap"] == "0"
+    assert observed["strict_eval"] == "1"
+    assert result["status"] == "error"

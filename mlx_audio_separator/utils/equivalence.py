@@ -194,6 +194,33 @@ def _apply_runtime_arch_params(
         inst.gen_size = inst.chunk_size - 2 * int(inst.trim)
 
 
+def _demucs_in_memory_stem_map(sep: Separator, audio_path: str) -> dict[str, tuple[np.ndarray, int]]:
+    """Run Demucs separation in-memory and return normalized stem map."""
+    import mlx.core as mx
+    import mlx_audio_io as mac
+
+    inst = sep.model_instance
+    if inst is None or not hasattr(inst, "_demucs_separator"):
+        raise RuntimeError("Demucs in-memory path requires loaded Demucs separator instance.")
+
+    demucs_sep = inst._demucs_separator
+    audio_mx, sr = mac.load(str(audio_path), dtype="float32")
+    if int(sr) != int(demucs_sep.samplerate):
+        audio_mx, sr = mac.load(str(audio_path), sr=demucs_sep.samplerate, dtype="float32")
+    wav_mx = audio_mx.T if audio_mx.ndim == 2 else mx.stack([audio_mx, audio_mx], axis=0)
+
+    _, stems_mx = demucs_sep.separate_tensor(wav_mx, return_mx=True)
+    out: dict[str, tuple[np.ndarray, int]] = {}
+    for stem_name, stem_value in stems_mx.items():
+        # Materialize an owned host buffer for stable cross-run comparisons.
+        arr = np.array(stem_value, copy=True)
+        # Demucs tensors are (channels, frames); normalize to (frames, channels).
+        if arr.ndim == 2:
+            arr = arr.T
+        out[str(stem_name).strip().lower()] = (arr, int(sr))
+    return out
+
+
 def run_model_equivalence(
     model_filename: str,
     corpus: list[str],
@@ -225,42 +252,60 @@ def run_model_equivalence(
     try:
         # One loaded model instance avoids false drift from model reload variance.
         with _temporary_env("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "1"):
-            sep = _separator_from_kwargs(base_kwargs, output_dir=os.path.join(run_root, "run"), info_only=False)
-            sep.load_model(model_filename=model_filename)
-            arch = sep.model_type or "unknown"
-            result["arch"] = arch
+            # Keep Demucs iSTFT in non-fused mode for deterministic equivalence.
+            # This isolates model-level behavior from fused iSTFT kernel drift.
+            with _temporary_env("MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED", "0"):
+                with _temporary_env("MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP", "0"):
+                    with _temporary_env("MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL", "1"):
+                        sep_base = _separator_from_kwargs(base_kwargs, output_dir=os.path.join(run_root, "run_base"), info_only=False)
+                        sep_base.load_model(model_filename=model_filename)
+                        arch = sep_base.model_type or "unknown"
+                        result["arch"] = arch
 
-            # Use info-only Separators to resolve finalized per-arch params from both configs.
-            baseline_info = _separator_from_kwargs(base_kwargs, output_dir=os.path.join(run_root, "baseline_info"), info_only=True)
-            candidate_info = _separator_from_kwargs(cand_kwargs, output_dir=os.path.join(run_root, "candidate_info"), info_only=True)
-            base_arch_params = dict(baseline_info.arch_specific_params.get(arch, {}))
-            cand_arch_params = dict(candidate_info.arch_specific_params.get(arch, {}))
+                        sep_cand = sep_base
+                        if arch == "Demucs":
+                            # Demucs inference mutates internal runtime state across calls.
+                            # Keep baseline/candidate on separate loaded model instances.
+                            sep_cand = _separator_from_kwargs(cand_kwargs, output_dir=os.path.join(run_root, "run_cand"), info_only=False)
+                            sep_cand.load_model(model_filename=model_filename)
 
-            all_pass = True
-            max_rel_l2 = 0.0
-            for audio_path in corpus:
-                _apply_runtime_arch_params(sep, arch, base_arch_params, demucs_shifts_zero=demucs_shifts_zero)
-                set_deterministic_seeds(seed)
-                baseline_outputs = sep.separate(audio_path)
-                baseline_stems = read_stem_map(baseline_outputs)
+                        # Use info-only Separators to resolve finalized per-arch params from both configs.
+                        baseline_info = _separator_from_kwargs(base_kwargs, output_dir=os.path.join(run_root, "baseline_info"), info_only=True)
+                        candidate_info = _separator_from_kwargs(cand_kwargs, output_dir=os.path.join(run_root, "candidate_info"), info_only=True)
+                        base_arch_params = dict(baseline_info.arch_specific_params.get(arch, {}))
+                        cand_arch_params = dict(candidate_info.arch_specific_params.get(arch, {}))
 
-                _apply_runtime_arch_params(sep, arch, cand_arch_params, demucs_shifts_zero=demucs_shifts_zero)
-                set_deterministic_seeds(seed)
-                candidate_outputs = sep.separate(audio_path)
-                candidate_stems = read_stem_map(candidate_outputs)
+                        all_pass = True
+                        max_rel_l2 = 0.0
+                        for audio_path in corpus:
+                            _apply_runtime_arch_params(sep_base, arch, base_arch_params, demucs_shifts_zero=demucs_shifts_zero)
+                            set_deterministic_seeds(seed)
+                            if arch == "Demucs":
+                                baseline_stems = _demucs_in_memory_stem_map(sep_base, audio_path)
+                            else:
+                                baseline_outputs = sep_base.separate(audio_path)
+                                baseline_stems = read_stem_map(baseline_outputs)
 
-                compared = compare_stem_maps(
-                    baseline=baseline_stems,
-                    candidate=candidate_stems,
-                    threshold_rel_l2=threshold_rel_l2,
-                )
-                result["per_file"][audio_path] = compared
-                all_pass = all_pass and bool(compared["pass"])
-                max_rel_l2 = max(max_rel_l2, float(compared["max_rel_l2"]))
+                            _apply_runtime_arch_params(sep_cand, arch, cand_arch_params, demucs_shifts_zero=demucs_shifts_zero)
+                            set_deterministic_seeds(seed)
+                            if arch == "Demucs":
+                                candidate_stems = _demucs_in_memory_stem_map(sep_cand, audio_path)
+                            else:
+                                candidate_outputs = sep_cand.separate(audio_path)
+                                candidate_stems = read_stem_map(candidate_outputs)
 
-            result["status"] = "ok"
-            result["max_rel_l2"] = float(max_rel_l2)
-            result["pass"] = bool(all_pass)
+                            compared = compare_stem_maps(
+                                baseline=baseline_stems,
+                                candidate=candidate_stems,
+                                threshold_rel_l2=threshold_rel_l2,
+                            )
+                            result["per_file"][audio_path] = compared
+                            all_pass = all_pass and bool(compared["pass"])
+                            max_rel_l2 = max(max_rel_l2, float(compared["max_rel_l2"]))
+
+                        result["status"] = "ok"
+                        result["max_rel_l2"] = float(max_rel_l2)
+                        result["pass"] = bool(all_pass)
     except Exception as exc:  # pragma: no cover - runtime-side failure path
         result["status"] = "error"
         result["error"] = str(exc)
