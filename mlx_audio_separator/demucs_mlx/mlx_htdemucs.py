@@ -4,6 +4,7 @@ MLX implementation of HTDemucs (inference-only).
 from __future__ import annotations
 
 import math
+import os
 import typing as tp
 
 import mlx.core as mx
@@ -15,6 +16,18 @@ from .mlx_transformer import CrossTransformerEncoder
 from .mlx_utils import MLXStateDictMixin, center_trim
 from .spec_mlx import ispectro, spectro
 from .wiener_mlx import wiener
+
+
+def _demucs_wiener_use_vmap() -> bool:
+    """Runtime control for Demucs Wiener vmap parallelization."""
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _demucs_strict_eval_enabled() -> bool:
+    """Enable extra eval barriers for reproducibility-sensitive runs."""
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 class HTDemucsMLX(MLXStateDictMixin, nn.Module):
@@ -390,8 +403,15 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
             # Concatenate time chunks: [T, F, C, S, 2]
             return mx.concatenate(out_chunks, axis=0)
 
-        # Apply vmap over the batch dimension (axis 0)
-        out = mx.vmap(_process_one_sample)(mag_out_mx, mix_stft_mx)
+        if _demucs_wiener_use_vmap():
+            # Fast path: parallel over batch.
+            out = mx.vmap(_process_one_sample)(mag_out_mx, mix_stft_mx)
+        else:
+            # Deterministic path: process samples serially.
+            out = mx.stack(
+                [_process_one_sample(mag_out_mx[idx], mix_stft_mx[idx]) for idx in range(B)],
+                axis=0,
+            )
 
         # Post-process: [B, T, F, C, S, 2] -> ...
         if residual:
@@ -412,6 +432,7 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
         return training_length
 
     def __call__(self, mix: mx.array) -> mx.array:
+        strict_eval = _demucs_strict_eval_enabled()
         length = mix.shape[-1]
         length_pre_pad = None
         if self.use_train_segment:
@@ -421,6 +442,8 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
                 mix = mx.pad(mix, [(0, 0), (0, 0), (0, training_length - length_pre_pad)])
         z = self._spec(mix)
         mag = self._magnitude(z)
+        if strict_eval:
+            mx.eval(z, mag)
         x = mag
 
         B, C, Fq, T = x.shape
@@ -432,6 +455,8 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
         meant = mx.mean(xt, axis=(1, 2), keepdims=True)
         stdt = mx.std(xt, axis=(1, 2), keepdims=True)
         xt = (xt - meant) / (1e-5 + stdt)
+        if strict_eval:
+            mx.eval(x, xt)
 
         saved = []
         saved_t = []
@@ -454,6 +479,8 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
                 emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
                 x = x + self.freq_emb_scale * emb
             saved.append(x)
+        if strict_eval:
+            mx.eval(x, xt)
 
         if self.crosstransformer:
             if self.bottom_channels:
@@ -468,6 +495,8 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
                 x = self.channel_downsampler(x)
                 x = x.reshape(b, c, f, t)
                 xt = self.channel_downsampler_t(xt)
+            if strict_eval:
+                mx.eval(x, xt)
 
         offset = self.depth - len(self.tdecoder)
         for idx, decode in enumerate(self.decoder):
@@ -482,6 +511,8 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
                 else:
                     skip_t = saved_t.pop(-1)
                     xt, _ = tdec(xt, skip_t, length_t)
+            if strict_eval:
+                mx.eval(x, xt)
 
         if len(saved) != 0 or len(lengths_t) != 0 or len(saved_t) != 0:
             raise RuntimeError("Skip connections not fully consumed")
@@ -491,10 +522,14 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
         x = x * std[:, None] + mean[:, None]
 
         zout = self._mask(z, x)
+        if strict_eval:
+            mx.eval(zout)
         if self.use_train_segment:
             x = self._ispec(zout, training_length)
         else:
             x = self._ispec(zout, length)
+        if strict_eval:
+            mx.eval(x)
 
         # Reshape xt to match expected output shape
         actual_length = xt.shape[-1]
@@ -510,4 +545,6 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
             x = x[..., :length]
         if length_pre_pad:
             x = x[..., :length_pre_pad]
+        if strict_eval:
+            mx.eval(x)
         return x

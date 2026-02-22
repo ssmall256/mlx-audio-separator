@@ -3,6 +3,7 @@ MLX inference apply_model equivalent.
 """
 from __future__ import annotations
 
+import os
 import random
 import typing as tp
 import warnings
@@ -12,6 +13,16 @@ import mlx.core as mx
 from .mlx_utils import center_trim
 
 _WEIGHT_CACHE: dict[tuple[int, float, str], mx.array] = {}
+
+
+def _deterministic_accumulation_enabled() -> bool:
+    """Enable strict ordered overlap-add accumulation for reproducibility checks."""
+    raw = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_ACCUMULATION")
+    if raw is not None:
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    # Default to strict accumulation in deterministic-fused mode.
+    fused = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED")
+    return str(fused).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class TensorChunk:
@@ -142,6 +153,7 @@ def apply_model(
         return out
 
     if split:
+        deterministic_accum = _deterministic_accumulation_enabled()
         out = mx.zeros((batch, len(model.sources), channels, length), dtype=mix_array.dtype)
         sum_weight = mx.zeros((length,), dtype=mix_array.dtype)
 
@@ -212,6 +224,9 @@ def apply_model(
                 out = out.at[:, :, :, offset:end].add(weight_view * chunk_out)
                 sum_weight = sum_weight.at[offset:end].add(weight)
                 pending_updates += 1
+                if deterministic_accum:
+                    # Preserve update order for deterministic equivalence runs.
+                    maybe_eval(force=True)
 
                 if progress_bar is not None:
                     progress_bar.update(1)
@@ -254,7 +269,7 @@ def apply_model(
                     out = out.at[:, :, :, offset:end].add(w * chunk_out)
                     sum_weight = sum_weight.at[offset:end].add(weight_slice)
                     pending_updates += 1
-                    maybe_eval()
+                    maybe_eval(force=deterministic_accum)
                     if progress_bar is not None:
                         progress_bar.update(1)
 

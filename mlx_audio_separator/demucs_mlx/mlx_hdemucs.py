@@ -4,6 +4,7 @@ MLX implementation of HDemucs building blocks (inference-only).
 from __future__ import annotations
 
 import math
+import os
 import typing as tp
 from copy import deepcopy
 
@@ -27,6 +28,18 @@ from .mlx_layers import (
 from .mlx_utils import MLXStateDictMixin
 from .spec_mlx import ispectro, spectro
 from .wiener_mlx import wiener
+
+
+def _demucs_wiener_use_vmap() -> bool:
+    """Runtime control for Demucs Wiener vmap parallelization."""
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _demucs_strict_eval_enabled() -> bool:
+    """Enable extra eval barriers for reproducibility-sensitive runs."""
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def pad1d(x: mx.array, paddings: tp.Tuple[int, int], mode: str = "constant", value: float = 0.0):
@@ -653,8 +666,15 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
                 out_chunks.append(z_out.transpose(0, 1, 2, 4, 3))
             return mx.concatenate(out_chunks, axis=0)
 
-        # Apply vmap over batch dimension
-        out = mx.vmap(_process_one_sample)(mag_out_mx, mix_stft_mx)
+        if _demucs_wiener_use_vmap():
+            # Fast path: parallel over batch.
+            out = mx.vmap(_process_one_sample)(mag_out_mx, mix_stft_mx)
+        else:
+            # Deterministic path: process samples serially.
+            out = mx.stack(
+                [_process_one_sample(mag_out_mx[idx], mix_stft_mx[idx]) for idx in range(B)],
+                axis=0,
+            )
 
         if residual:
             out = out[..., :-1, :]
@@ -663,11 +683,14 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
         return out.astype(init)
 
     def __call__(self, mix: mx.array) -> mx.array:
+        strict_eval = _demucs_strict_eval_enabled()
         x = mix
         length = x.shape[-1]
 
         z = self._spec(mix)
         mag = self._magnitude(z)
+        if strict_eval:
+            mx.eval(z, mag)
         x = mag
 
         B, C, Fq, T = x.shape
@@ -680,6 +703,10 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
             meant = mx.mean(xt, axis=(1, 2), keepdims=True)
             stdt = mx.std(xt, axis=(1, 2), keepdims=True)
             xt = (xt - meant) / (1e-5 + stdt)
+            if strict_eval:
+                mx.eval(x, xt)
+        elif strict_eval:
+            mx.eval(x)
 
         saved = []
         saved_t = []
@@ -702,6 +729,11 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
                 emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
                 x = x + self.freq_emb_scale * emb
             saved.append(x)
+        if strict_eval:
+            if self.hybrid:
+                mx.eval(x, xt)
+            else:
+                mx.eval(x)
 
         x = mx.zeros_like(x)
         if self.hybrid:
@@ -721,6 +753,11 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
                 else:
                     skip_t = saved_t.pop(-1)
                     xt, _ = tdec(xt, skip_t, length_t)
+            if strict_eval:
+                if self.hybrid:
+                    mx.eval(x, xt)
+                else:
+                    mx.eval(x)
 
         if len(saved) != 0 or len(lengths_t) != 0 or len(saved_t) != 0:
             raise RuntimeError("Skip connections not fully consumed")
@@ -730,7 +767,11 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
         x = x * std[:, None] + mean[:, None]
 
         zout = self._mask(z, x)
+        if strict_eval:
+            mx.eval(zout)
         x = self._ispec(zout, length)
+        if strict_eval:
+            mx.eval(x)
 
         if self.hybrid:
             xt_length = xt.shape[-1]
@@ -744,4 +785,6 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
             elif x.shape[-1] > xt_length:
                 x = center_trim(x, xt_length)
             x = xt + x
+        if strict_eval:
+            mx.eval(x)
         return x
