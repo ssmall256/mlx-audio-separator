@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlx-audio-separator"
+version = "0.1.0"
+description = "MLX-native audio stem separation for Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Sam"}]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Mixers",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "mlx>=0.22",
+    "mlx-audio-io",
+    "mlx-spectro",
+    "numpy>=2",
+    "pyyaml",
+    "requests>=2",
+    "tqdm",
+    "packaging",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov>=4.1.0",
+    "ruff",
+]
+convert = [
+    "torch>=2.3",
+    "onnx>=1.15",
+]
+
+[project.scripts]
+mlx-audio-separator = "mlx_audio_separator.utils.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/sam/mlx-audio-separator"
+Repository = "https://github.com/sam/mlx-audio-separator"
+Issues = "https://github.com/sam/mlx-audio-separator/issues"
+
+[tool.ruff]
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["mlx_audio_separator*"]
+
+[tool.setuptools.package-data]
+mlx_audio_separator = ["models.json", "models-scores.json", "model-data.json", "separator/models/vr/modelparams/*.json"]
