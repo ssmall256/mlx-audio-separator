@@ -1,6 +1,7 @@
 """Forward-pass shape tests for all model architectures."""
 
 import mlx.core as mx
+from mlx.utils import tree_flatten
 
 
 class TestBSRoformer:
@@ -70,3 +71,15 @@ class TestCascadedNet:
         assert out.shape[1] == 385  # output_bin = 768//2 + 1 = 385
         assert out.shape[2] == 64
         assert out.shape[3] == 2
+
+
+class TestVRLayers:
+    def test_separable_conv_depthwise_shapes(self):
+        from mlx_audio_separator.separator.models.vr.layers import SeperableConv2DBNActiv
+
+        layer = SeperableConv2DBNActiv(8, 8, ksize=3, stride=1, pad=1)
+        params = dict(tree_flatten(layer.parameters()))
+
+        # Depthwise grouped conv: in/groups == 1 for each output channel.
+        assert params["dw_conv.weight"].shape == (8, 3, 3, 1)
+        assert params["pw_conv.weight"].shape == (8, 1, 1, 8)

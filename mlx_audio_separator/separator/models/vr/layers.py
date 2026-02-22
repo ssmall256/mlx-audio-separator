@@ -55,20 +55,15 @@ class Conv2DBNActiv(nn.Module):
 class SeperableConv2DBNActiv(nn.Module):
     """Depthwise separable Conv2d + BatchNorm + activation.
 
-    MLX Conv2d does not support groups parameter directly for depthwise convolution.
-    We implement depthwise conv as a grouped convolution workaround:
-    process each channel independently, then apply 1x1 pointwise conv.
+    Uses grouped Conv2d for depthwise stage (groups=nin), then 1x1 pointwise conv.
     """
 
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ="relu"):
         super().__init__()
-        # Depthwise: one filter per channel (groups=nin)
-        # MLX doesn't support groups in Conv2d, so we use a single Conv2d
-        # with groups=1 but more output channels, then sum - actually simpler
-        # to just use standard conv for correctness since these are small models.
-        # For VR models, depthwise separable is mainly for parameter efficiency,
-        # but using standard conv works identically for inference.
-        self.dw_conv = nn.Conv2d(nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False)
+        # Depthwise: one spatial kernel per input channel.
+        self.dw_conv = nn.Conv2d(
+            nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, groups=nin, bias=False
+        )
         self.pw_conv = nn.Conv2d(nin, nout, kernel_size=1, bias=False)
         self.bn = nn.BatchNorm(nout)
         self.activ = activ

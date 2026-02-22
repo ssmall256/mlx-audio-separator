@@ -181,9 +181,10 @@ def _convert_key(key):
 
     Also handles:
     - CascadedNet stg*_low_band_net Sequential: .0. → _base., .1. → _proj.
-    - ASPP bottleneck Sequential: bottleneck.0.conv.N → bottleneck.conv/bn
+    - ASPP bottleneck Sequential: bottleneck.0.* → bottleneck_conv.*
     - ASPP conv1 Sequential: conv1.1.conv.N → conv1_proj.conv/bn (skip AdaptiveAvgPool)
-    - Conv2DBNActiv Sequential: conv.0 → conv, conv.1 → bn, conv.2 → bn (separable)
+    - ASPP separable conv blocks: conv3/4/5.conv.[0|1|2] → dw_conv/pw_conv/bn
+    - Decoder naming drift: dec*.conv.conv.N → dec*.conv1.conv/bn
     - LSTM bidirectional weight mappings
 
     Returns None for parameters that should be skipped (num_batches_tracked).
@@ -225,28 +226,63 @@ def _convert_key(key):
             i += 2
             continue
 
-        # Handle Conv2DBNActiv Sequential: conv.N → conv or bn
-        # Conv2DBNActiv: conv.0 = Conv2d, conv.1 = BatchNorm, conv.2 = Activation
-        # SeperableConv2DBNActiv: conv.0 = depthwise, conv.1 = pointwise, conv.2 = BN
-        if part == "conv" and i + 1 < len(parts) and parts[i + 1].isdigit():
+        # Handle ASPP bottleneck Sequential wrapper
+        # PyTorch: aspp.bottleneck.0.conv.N.param
+        # MLX: aspp.bottleneck_conv.conv/bn.param
+        if part == "bottleneck" and i + 1 < len(parts) and parts[i + 1].isdigit():
             idx = int(parts[i + 1])
             if idx == 0:
-                new_parts.append("conv")
-                i += 2  # skip "conv" and "0"
-                continue
-            elif idx == 1:
-                new_parts.append("bn")
-                i += 2  # skip "conv" and "1"
-                continue
-            elif idx == 2:
-                # BatchNorm for SeperableConv2DBNActiv
-                new_parts.append("bn")
-                i += 2  # skip "conv" and "2"
-                continue
+                new_parts.append("bottleneck_conv")
             else:
-                # Activation layers (no learnable params), skip
+                new_parts.append(f"bottleneck_{idx}")
+            i += 2
+            continue
+
+        # Decoder naming in source checkpoints is dec*.conv.* while our model uses dec*.conv1.*
+        # Example: dec1.conv.conv.0.weight -> dec1.conv1.conv.weight
+        if (
+            part == "conv"
+            and i > 0
+            and parts[i - 1].startswith("dec")
+            and i + 1 < len(parts)
+            and parts[i + 1] == "conv"
+        ):
+            new_parts.append("conv1")
+            i += 1
+            continue
+
+        # Handle Conv2DBNActiv/Separable Sequential: conv.N → concrete submodule
+        # Conv2DBNActiv: conv.0 = Conv2d, conv.1 = BatchNorm
+        # ASPP separable blocks: conv3/conv4/conv5 use conv.0=dw, conv.1=pw, conv.2=bn
+        if part == "conv" and i + 1 < len(parts) and parts[i + 1].isdigit():
+            idx = int(parts[i + 1])
+            in_aspp_sep = (
+                len(new_parts) >= 2
+                and new_parts[-2] == "aspp"
+                and new_parts[-1] in {"conv3", "conv4", "conv5"}
+            )
+            if in_aspp_sep:
+                if idx == 0:
+                    new_parts.append("dw_conv")
+                elif idx == 1:
+                    new_parts.append("pw_conv")
+                elif idx == 2:
+                    new_parts.append("bn")
+                else:
+                    i += 2
+                    continue
                 i += 2
                 continue
+
+            if idx == 0:
+                new_parts.append("conv")
+            elif idx in (1, 2):
+                new_parts.append("bn")
+            else:
+                i += 2
+                continue
+            i += 2
+            continue
 
         new_parts.append(part)
         i += 1

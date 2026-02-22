@@ -67,18 +67,34 @@ class TestVRWeightConversion:
         assert _convert_key("stg1_low_band_net.1.conv.weight") == "stg1_low_band_net_proj.conv.weight"
 
     def test_conv_0_weight(self):
-        """conv.0.weight stays as conv.0.weight (conv module, idx 0 not stripped)."""
         from mlx_audio_separator.separator.models.vr.loader import _convert_key
-        result = _convert_key("enc1.conv.0.weight")
-        # The converter appends "conv" then leaves "0" as next part
-        assert "conv" in result
+        assert _convert_key("enc1.conv.0.weight") == "enc1.conv.weight"
 
     def test_conv_1_becomes_bn(self):
-        """conv.1.running_mean → bn.1.running_mean (bn replaces conv for idx>=1)."""
         from mlx_audio_separator.separator.models.vr.loader import _convert_key
-        result = _convert_key("enc1.conv.1.running_mean")
-        assert "bn" in result
-        assert "running_mean" in result
+        assert _convert_key("enc1.conv.1.running_mean") == "enc1.bn.running_mean"
+
+    def test_decoder_conv_mapping(self):
+        from mlx_audio_separator.separator.models.vr.loader import _convert_key
+        assert _convert_key("stg1_low_band_net.dec1.conv.conv.0.weight") == "stg1_low_band_net.dec1.conv1.conv.weight"
+        assert _convert_key("stg1_low_band_net.dec1.conv.conv.1.running_var") == "stg1_low_band_net.dec1.conv1.bn.running_var"
+
+    def test_aspp_bottleneck_mapping(self):
+        from mlx_audio_separator.separator.models.vr.loader import _convert_key
+        assert (
+            _convert_key("stg1_low_band_net.aspp.bottleneck.0.conv.0.weight")
+            == "stg1_low_band_net.aspp.bottleneck_conv.conv.weight"
+        )
+        assert (
+            _convert_key("stg1_low_band_net.aspp.bottleneck.0.conv.1.bias")
+            == "stg1_low_band_net.aspp.bottleneck_conv.bn.bias"
+        )
+
+    def test_aspp_separable_mapping(self):
+        from mlx_audio_separator.separator.models.vr.loader import _convert_key
+        assert _convert_key("stg1_low_band_net.aspp.conv3.conv.0.weight") == "stg1_low_band_net.aspp.conv3.dw_conv.weight"
+        assert _convert_key("stg1_low_band_net.aspp.conv3.conv.1.weight") == "stg1_low_band_net.aspp.conv3.pw_conv.weight"
+        assert _convert_key("stg1_low_band_net.aspp.conv3.conv.2.running_mean") == "stg1_low_band_net.aspp.conv3.bn.running_mean"
 
     def test_is_conv_weight(self):
         from mlx_audio_separator.separator.models.vr.loader import _is_conv_weight
