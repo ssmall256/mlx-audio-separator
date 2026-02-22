@@ -213,22 +213,47 @@ class MDXCSeparator(CommonSeparator):
             self.logger.debug(f"Processing {num_chunks} chunks")
 
             batch_size = max(1, int(self.batch_size))
-            for i in tqdm(range(0, num_chunks, batch_size), desc="MLX inference"):
-                starts_batch = starts[i : i + batch_size]
-                parts_batch = [mix_mlx[:, s : s + chunk_size] for s in starts_batch]
+            eval_flush_interval = max(8, batch_size * 2)
+            pending_updates = 0
+
+            def maybe_eval(force=False):
+                nonlocal pending_updates, result, counter
+                if force or pending_updates >= eval_flush_interval:
+                    mx.eval(result, counter)
+                    pending_updates = 0
+
+            def run_batch(start_idx: int, current_batch_size: int):
+                nonlocal result, counter, pending_updates
+                parts_batch = [
+                    mix_mlx[:, starts[start_idx + local_idx] : starts[start_idx + local_idx] + chunk_size]
+                    for local_idx in range(current_batch_size)
+                ]
                 batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
                 x = model_run(batch)
                 if x.ndim == 3:
                     x = mx.expand_dims(x, axis=1)
                 mx.eval(x)
 
-                for batch_idx, write_start in enumerate(starts_batch):
+                for batch_idx in range(current_batch_size):
+                    write_start = starts[start_idx + batch_idx]
                     out = x[batch_idx]
                     safe_len = min(chunk_size, out.shape[-1], window.shape[0])
                     if safe_len > 0:
                         weighted_chunk = out[..., :safe_len] * window[:safe_len]
                         result = result.at[..., write_start : write_start + safe_len].add(weighted_chunk)
                         counter = counter.at[..., write_start : write_start + safe_len].add(window[:safe_len])
+                        pending_updates += 1
+
+                maybe_eval()
+
+            num_full_batches, tail_size = divmod(num_chunks, batch_size)
+            total_batches = num_full_batches + (1 if tail_size else 0)
+            for batch_id in tqdm(range(total_batches), desc="MLX inference"):
+                start_idx = batch_id * batch_size
+                current_batch_size = batch_size if batch_id < num_full_batches else tail_size
+                run_batch(start_idx, current_batch_size)
+
+            maybe_eval(force=True)
 
         # Normalize by overlap counter
         inferenced_outputs = result / mx.maximum(counter, mx.array(1e-10))

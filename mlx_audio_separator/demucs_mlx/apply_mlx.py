@@ -115,8 +115,6 @@ def apply_model(
         # Vectorized normalization by totals.
         denom = mx.array(totals, dtype=estimates.dtype).reshape(1, -1, 1, 1)
         estimates = estimates / denom
-        if len(model.models) > 1:
-            mx.eval(estimates)
         return estimates
 
     # --- Standard Inference ---
@@ -173,7 +171,7 @@ def apply_model(
         # --- BATCHING STATE ---
         batch_inputs = []
         batch_indices = []
-        eval_flush_interval = 4
+        eval_flush_interval = max(8, int(batch_size) * 2)
         pending_updates = 0
         if hasattr(model, "valid_length"):
             std_valid_len = model.valid_length(segment_length)
