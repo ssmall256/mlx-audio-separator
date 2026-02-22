@@ -81,6 +81,13 @@ Available performance options:
 - `--perf_trace`
 - `--perf_trace_path <path>`
 
+Current `latency_safe` preset recommendations (M4-class Apple Silicon, opt-in):
+
+- `Demucs`: `batch_size=12`
+- `MDXC` (Roformer): `batch_size=1`
+- `MDX`: `batch_size=1`
+- `VR`: `batch_size=2`
+
 ## Benchmarking
 
 Benchmark now supports warmup/repeat medians and optional phase profiling:
