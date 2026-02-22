@@ -244,10 +244,11 @@ class Separator:
         if speed_mode != "latency_safe":
             return
         self.logger.info("Applying latency_safe speed-mode presets.")
-        self.arch_specific_params["Demucs"]["batch_size"] = 12
+        # Keep strict output-equivalence behavior for latency_safe mode.
+        self.arch_specific_params["Demucs"]["batch_size"] = 8
         self.arch_specific_params["MDXC"]["batch_size"] = 1
         self.arch_specific_params["MDX"]["batch_size"] = 1
-        self.arch_specific_params["VR"]["batch_size"] = 2
+        self.arch_specific_params["VR"]["batch_size"] = 1
 
     def _build_tuning_key(self, arch: str, model_name: str, sr: int, channels: int):
         device = "unknown"

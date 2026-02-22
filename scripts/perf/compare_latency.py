@@ -34,6 +34,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from mlx_audio_separator.utils.equivalence import run_equivalence_suite
+
 
 ARCH_TARGETED_IMPROVEMENT = {"Demucs", "MDXC"}
 ARCH_REGRESSION_GUARD = {"MDX", "VR"}
@@ -249,7 +251,15 @@ def compare_results(
     return out
 
 
-def _write_markdown(path: Path, summary_rows: list[dict[str, Any]], baseline_label: str, candidate_label: str):
+def _write_markdown(
+    path: Path,
+    summary_rows: list[dict[str, Any]],
+    baseline_label: str,
+    candidate_label: str,
+    equivalence_summary: list[dict[str, Any]] | None = None,
+    equivalence_threshold_rel_l2: float | None = None,
+    equivalence_gated_arches: list[str] | None = None,
+):
     lines = [
         "# Latency Comparison",
         "",
@@ -263,6 +273,25 @@ def _write_markdown(path: Path, summary_rows: list[dict[str, Any]], baseline_lab
             f"{row['candidate_median_s']:.3f} | {delta} | {row['criterion']} | "
             f"{'yes' if row['pass'] else 'no'} |"
         )
+
+    if equivalence_summary:
+        lines.extend(
+            [
+                "",
+                "## Deterministic Equivalence",
+                "",
+                f"- Threshold (relative L2): `{equivalence_threshold_rel_l2}`",
+                f"- Gated architectures: `{', '.join(equivalence_gated_arches or [])}`",
+                "",
+                "| Model | Arch | Max rel L2 | Gated | Pass | Status |",
+                "|---|---:|---:|---:|---:|---|",
+            ]
+        )
+        for row in equivalence_summary:
+            lines.append(
+                f"| `{row['model']}` | {row['arch']} | {row['max_rel_l2']:.8f} | "
+                f"{'yes' if row['gated'] else 'no'} | {'yes' if row['pass'] else 'no'} | {row['status']} |"
+            )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -279,6 +308,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-markdown", default=None, help="Output Markdown path.")
     parser.add_argument("--target-improvement-demucs-mdxc", type=float, default=20.0, help="Required improvement percentage.")
     parser.add_argument("--max-regression-mdx-vr", type=float, default=5.0, help="Allowed regression percentage.")
+    parser.add_argument("--equivalence-check", action="store_true", help="Run deterministic output-equivalence checks.")
+    parser.add_argument("--equivalence-threshold-rel-l2", type=float, default=1e-5, help="Relative L2 threshold for equivalence.")
+    parser.add_argument("--equivalence-seed", type=int, default=12345, help="Deterministic seed for equivalence checks.")
+    parser.add_argument("--equivalence-max-files", type=int, default=1, help="Number of corpus files for equivalence (0=all).")
+    parser.add_argument(
+        "--equivalence-strict-demucs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include Demucs in strict equivalence pass/fail gating (default: false).",
+    )
+    parser.add_argument(
+        "--equivalence-demucs-shifts-zero",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Force Demucs shifts=0 in equivalence runs (default: true).",
+    )
     parser.add_argument("--keep-temp", action="store_true", help="Keep temporary benchmark output directories.")
     return parser.parse_args()
 
@@ -335,6 +380,21 @@ def main():
         max_regression_mdx_vr=args.max_regression_mdx_vr,
     )
 
+    equivalence_payload = None
+    if args.equivalence_check:
+        eq_corpus = corpus if int(args.equivalence_max_files) == 0 else corpus[: int(args.equivalence_max_files)]
+        equivalence_payload = run_equivalence_suite(
+            corpus=eq_corpus,
+            models=models,
+            baseline_separator_kwargs=baseline_cfg.separator_kwargs,
+            candidate_separator_kwargs=candidate_cfg.separator_kwargs,
+            threshold_rel_l2=float(args.equivalence_threshold_rel_l2),
+            seed=int(args.equivalence_seed),
+            demucs_shifts_zero=bool(args.equivalence_demucs_shifts_zero),
+            model_file_dir_override=args.model_file_dir,
+            gated_arches={"Demucs", "MDXC", "MDX", "VR"} if args.equivalence_strict_demucs else {"MDXC", "MDX", "VR"},
+        )
+
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_json = Path(args.output_json) if args.output_json else Path(f"/Users/sam/Code/mlx-audio-separator/perf_reports/compare_latency_{now}.json")
     output_md = Path(args.output_markdown) if args.output_markdown else output_json.with_suffix(".md")
@@ -352,19 +412,31 @@ def main():
             "results": candidate_results,
         },
         "summary": summary_rows,
+        "equivalence": equivalence_payload,
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    _write_markdown(output_md, summary_rows, baseline_cfg.label, candidate_cfg.label)
+    _write_markdown(
+        output_md,
+        summary_rows,
+        baseline_cfg.label,
+        candidate_cfg.label,
+        equivalence_summary=equivalence_payload["summary"] if equivalence_payload else None,
+        equivalence_threshold_rel_l2=equivalence_payload["threshold_rel_l2"] if equivalence_payload else None,
+        equivalence_gated_arches=equivalence_payload["gated_arches"] if equivalence_payload else None,
+    )
 
     total = len(summary_rows)
     passed = sum(1 for row in summary_rows if row["pass"])
     failed = total - passed
     print(f"Compared {total} models: {passed} pass, {failed} fail")
+    if equivalence_payload:
+        eq_total = len(equivalence_payload["summary"])
+        eq_passed = sum(1 for row in equivalence_payload["summary"] if row["pass"])
+        print(f"Equivalence: {eq_passed}/{eq_total} pass")
     print(f"JSON: {output_json}")
     print(f"Markdown: {output_md}")
 
 
 if __name__ == "__main__":
     main()
-

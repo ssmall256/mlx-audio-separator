@@ -81,12 +81,16 @@ Available performance options:
 - `--perf_trace`
 - `--perf_trace_path <path>`
 
-Current `latency_safe` preset recommendations (M4-class Apple Silicon, opt-in):
+Current `latency_safe` preset recommendations (strict output-equivalent path, opt-in):
 
-- `Demucs`: `batch_size=12`
+- `Demucs`: `batch_size=8`
 - `MDXC` (Roformer): `batch_size=1`
 - `MDX`: `batch_size=1`
-- `VR`: `batch_size=2`
+- `VR`: `batch_size=1`
+
+Deterministic equivalence checks use strict pass/fail gating for `MDXC`, `MDX`, and `VR` by default.
+`Demucs` is reported as informational unless strict Demucs gating is explicitly enabled.
+When equivalence utilities run, they automatically enable deterministic fused-kernel mode for reproducible Demucs comparisons.
 
 ## Benchmarking
 

@@ -11,6 +11,8 @@ fall back to equivalent pure-MLX operations automatically.
 """
 from __future__ import annotations
 
+import os
+
 import mlx.core as mx
 import mlx.nn as nn
 
@@ -33,6 +35,21 @@ def _has_metal() -> bool:
 
 
 HAS_METAL = _has_metal()
+
+
+def _stable_threadgroup_size(elems_per_group: int) -> int:
+    """Choose a stable SIMD-aligned threadgroup size for reduction kernels.
+
+    Fast path uses up to 1024 threads. Deterministic mode caps to 256 to avoid
+    numerical instability and run-to-run drift observed for some GroupNorm
+    shapes on Apple GPUs.
+
+    Enable deterministic mode with:
+      MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED=1
+    """
+    deterministic = os.getenv("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "").strip().lower()
+    max_threads = 256 if deterministic in {"1", "true", "yes", "on"} else 1024
+    return min(max_threads, max(32, ((int(elems_per_group) + 31) // 32) * 32))
 
 # ==============================================================================
 # Fused GLU: a * sigmoid(b) where [a, b] = split(x, 2, axis)
@@ -295,7 +312,7 @@ def fused_groupnorm_gelu(
 
     total_groups = B * num_groups
     elems_per_group = channels_per_group * spatial_size
-    tg = min(1024, max(32, ((elems_per_group + 31) // 32) * 32))
+    tg = _stable_threadgroup_size(elems_per_group)
 
     result = _get_groupnorm_gelu_kernel()(
         inputs=[x_contig, weight, bias, eps_arr, params],
@@ -508,7 +525,7 @@ def fused_groupnorm_glu(
 
     total_groups = B * num_groups
     elems_per_group = channels_per_group * spatial_size
-    tg = min(1024, max(32, ((elems_per_group + 31) // 32) * 32))
+    tg = _stable_threadgroup_size(elems_per_group)
 
     out_shape = list(orig_shape)
     out_shape[1] = C_half

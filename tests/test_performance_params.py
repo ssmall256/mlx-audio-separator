@@ -26,10 +26,10 @@ class TestPerformanceParams:
             model_file_dir=str(tmp_path / "models"),
             performance_params={"speed_mode": "latency_safe"},
         )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == 12
+        assert sep.arch_specific_params["Demucs"]["batch_size"] == 8
         assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
         assert sep.arch_specific_params["MDX"]["batch_size"] == 1
-        assert sep.arch_specific_params["VR"]["batch_size"] == 2
+        assert sep.arch_specific_params["VR"]["batch_size"] == 1
 
     def test_invalid_speed_mode(self):
         with pytest.raises(ValueError, match="speed_mode"):
