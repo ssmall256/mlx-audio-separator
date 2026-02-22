@@ -3,10 +3,12 @@
 import gc
 import os
 import re
+import time
 from logging import Logger
 
 import mlx_audio_io as mac
 import numpy as np
+from mlx_audio_separator.utils.performance import AsyncStemWriter, clear_mlx_cache
 
 
 def normalize(wave, max_peak=1.0, min_peak=None):
@@ -95,6 +97,12 @@ class CommonSeparator:
         self.output_single_stem = config.get("output_single_stem")
         self.invert_using_spec = config.get("invert_using_spec")
         self.sample_rate = config.get("sample_rate")
+        self.performance_params = config.get("performance_params", {}) or {}
+        self.cache_clear_policy = self.performance_params.get("cache_clear_policy", "aggressive")
+        self.write_workers = int(self.performance_params.get("write_workers", 1))
+        self._write_suppressed = False
+        self._writer = None
+        self.reset_perf_metrics()
 
         self.primary_stem_name = None
         self.secondary_stem_name = None
@@ -145,6 +153,35 @@ class CommonSeparator:
     def cached_sources_clear(self):
         self.cached_sources_map = {}
 
+    def reset_perf_metrics(self):
+        self.perf_metrics = {
+            "decode_s": 0.0,
+            "preprocess_s": 0.0,
+            "inference_s": 0.0,
+            "postprocess_s": 0.0,
+            "write_s": 0.0,
+            "cleanup_s": 0.0,
+            "total_s": 0.0,
+        }
+
+    def add_perf_time(self, key: str, delta: float):
+        if key not in self.perf_metrics:
+            self.perf_metrics[key] = 0.0
+        self.perf_metrics[key] += float(max(delta, 0.0))
+
+    def set_write_suppressed(self, enabled: bool):
+        self._write_suppressed = bool(enabled)
+
+    def get_perf_metrics(self):
+        return dict(self.perf_metrics)
+
+    def flush_pending_writes(self):
+        if self._writer is None:
+            return
+        t0 = time.perf_counter()
+        self._writer.flush()
+        self.add_perf_time("write_s", time.perf_counter() - t0)
+
     def prepare_mix(self, mix):
         """Load and prepare audio mix using mlx-audio-io."""
         audio_path = mix
@@ -194,6 +231,10 @@ class CommonSeparator:
 
     def write_audio(self, stem_path: str, stem_source):
         """Write audio using mlx-audio-io."""
+        if self._write_suppressed:
+            self.logger.debug("Write suppressed for tuning run.")
+            return
+
         stem_source = normalize(wave=stem_source, max_peak=self.normalization_threshold, min_peak=self.amplification_threshold)
 
         if np.max(np.abs(stem_source)) < 1e-6:
@@ -228,18 +269,30 @@ class CommonSeparator:
             bitrate = "320k"
 
         try:
-            mac.save(str(stem_path), stem_source, self.sample_rate, encoding=output_encoding, bitrate=bitrate)
+            if self.write_workers > 1:
+                if self._writer is None:
+                    self._writer = AsyncStemWriter(workers=self.write_workers)
+                self._writer.submit(
+                    stem_path=str(stem_path),
+                    stem_source=stem_source,
+                    sample_rate=self.sample_rate,
+                    encoding=output_encoding,
+                    bitrate=bitrate,
+                )
+            else:
+                t0 = time.perf_counter()
+                mac.save(str(stem_path), stem_source, self.sample_rate, encoding=output_encoding, bitrate=bitrate)
+                self.add_perf_time("write_s", time.perf_counter() - t0)
             self.logger.debug(f"Exported audio file successfully to {stem_path}")
         except Exception as e:
             self.logger.error(f"Error exporting audio file: {e}")
+            raise
 
     def clear_gpu_cache(self):
         self.logger.debug("Running garbage collection...")
         gc.collect()
         try:
-            import mlx.core as mx
-            mx.metal.clear_cache()
-            self.logger.debug("Cleared MLX Metal cache.")
+            clear_mlx_cache(self.logger)
         except Exception:
             pass
 
@@ -251,6 +304,11 @@ class CommonSeparator:
         self.secondary_source = None
         self.primary_stem_output_path = None
         self.secondary_stem_output_path = None
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            finally:
+                self._writer = None
 
     def sanitize_filename(self, filename):
         sanitized = re.sub(r'[<>:"/\\|?*]', '_', filename)

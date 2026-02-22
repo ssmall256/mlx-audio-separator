@@ -11,11 +11,20 @@ import re
 import subprocess
 import time
 import warnings
+from datetime import datetime, timezone
 from importlib import metadata
 
 import requests
 import yaml
 from tqdm import tqdm
+from mlx_audio_separator.utils.performance import (
+    PerfTraceWriter,
+    clear_mlx_cache,
+    load_tuning_cache,
+    normalize_performance_params,
+    save_tuning_cache,
+    select_best_candidate,
+)
 
 
 class Separator:
@@ -50,6 +59,15 @@ class Separator:
         batch_size: 1
         overlap: 8
         pitch_shift: 0
+
+    Performance Parameters (opt-in):
+        speed_mode: "default" | "latency_safe"
+        auto_tune_batch: False
+        tune_probe_seconds: 8.0
+        cache_clear_policy: "aggressive" | "deferred"
+        write_workers: 1
+        perf_trace: False
+        perf_trace_path: None
     """
 
     def __init__(
@@ -70,6 +88,7 @@ class Separator:
         mdxc_params=None,
         mdx_params=None,
         vr_params=None,
+        performance_params=None,
         info_only=False,
     ):
         self.logger = logging.getLogger(__name__)
@@ -151,6 +170,7 @@ class Separator:
         if chunk_duration is not None:
             if chunk_duration <= 0:
                 raise ValueError("chunk_duration must be greater than 0")
+        self.performance_params = normalize_performance_params(performance_params)
 
         if demucs_params is None:
             demucs_params = {
@@ -177,10 +197,22 @@ class Separator:
             "Demucs": demucs_params, "MDXC": mdxc_params,
             "MDX": mdx_params, "VR": vr_params,
         }
+        self._apply_speed_mode_overrides()
 
         self.model_instance = None
+        self.model_type = None
+        self.last_perf_metrics = None
         self.model_is_uvr_vip = False
         self.model_friendly_name = None
+        self._files_since_cache_clear = 0
+        self._tuning_cache = load_tuning_cache()
+        self._perf_trace_writer = None
+        self._skip_auto_tune = False
+        if self.performance_params["perf_trace"]:
+            trace_path = self.performance_params["perf_trace_path"]
+            if trace_path is None:
+                trace_path = os.path.join(self.output_dir, "perf_trace.jsonl")
+            self._perf_trace_writer = PerfTraceWriter(trace_path)
 
         if not info_only:
             self._check_mlx_available()
@@ -206,6 +238,148 @@ class Separator:
             self.logger.error("FFmpeg is not installed. Please install FFmpeg to use this package.")
             if "PYTEST_CURRENT_TEST" not in os.environ:
                 raise
+
+    def _apply_speed_mode_overrides(self):
+        speed_mode = self.performance_params["speed_mode"]
+        if speed_mode != "latency_safe":
+            return
+        self.logger.info("Applying latency_safe speed-mode presets.")
+        self.arch_specific_params["Demucs"]["batch_size"] = 12
+        self.arch_specific_params["MDXC"]["batch_size"] = 1
+        self.arch_specific_params["MDX"]["batch_size"] = 1
+        self.arch_specific_params["VR"]["batch_size"] = 2
+
+    def _build_tuning_key(self, arch: str, model_name: str, sr: int, channels: int):
+        device = "unknown"
+        try:
+            import mlx.core as mx
+            device = str(mx.default_device())
+        except Exception:
+            pass
+        return f"{arch}|{model_name}|sr={int(sr)}|ch={int(channels)}|device={device}"
+
+    def _set_model_batch_size(self, batch_size: int):
+        batch_size = int(batch_size)
+        if self.model_instance is None:
+            return
+        if self.model_type == "Demucs":
+            self.model_instance.batch_size = batch_size
+            if hasattr(self.model_instance, "_demucs_separator"):
+                self.model_instance._demucs_separator.batch_size = batch_size
+        elif self.model_type in {"MDXC", "MDX", "VR"}:
+            self.model_instance.batch_size = batch_size
+
+    def _candidate_batch_sizes(self):
+        return {
+            "Demucs": [4, 8, 12],
+            "MDXC": [1, 2, 4],
+            "MDX": [1, 2, 4],
+            "VR": [1, 2, 4],
+        }
+
+    def _get_model_batch_size(self):
+        if self.model_instance is None:
+            return None
+        return int(getattr(self.model_instance, "batch_size", 1))
+
+    def _auto_tune_batch_if_needed(self, audio_file_path):
+        if not self.performance_params["auto_tune_batch"]:
+            return
+        if self.model_instance is None or self.model_type not in self._candidate_batch_sizes():
+            return
+
+        import tempfile
+        import mlx_audio_io as mac
+        try:
+            info = mac.info(str(audio_file_path))
+            channels = int(getattr(info, "channels", 2))
+            key = self._build_tuning_key(self.model_type, self.model_name, self.sample_rate, channels)
+            if key in self._tuning_cache:
+                tuned = int(self._tuning_cache[key]["batch_size"])
+                self.logger.info(f"Using cached auto-tuned batch size {tuned} for {self.model_type}.")
+                self._set_model_batch_size(tuned)
+                return
+
+            probe_seconds = float(self.performance_params["tune_probe_seconds"])
+            audio_mx, sr = mac.load(str(audio_file_path), sr=self.sample_rate, dtype="float32")
+            probe_frames = max(1, int(round(probe_seconds * sr)))
+            probe_audio = audio_mx[:probe_frames]
+
+            with tempfile.TemporaryDirectory(prefix="audio-separator-tune-") as tune_dir:
+                probe_path = os.path.join(tune_dir, "probe.wav")
+                mac.save(probe_path, probe_audio, sr, encoding="float32")
+
+                original_output_dir = self.output_dir
+                original_model_output_dir = getattr(self.model_instance, "output_dir", original_output_dir)
+                original_batch = self._get_model_batch_size()
+
+                self.output_dir = tune_dir
+                self.model_instance.output_dir = tune_dir
+                self.model_instance.set_write_suppressed(True)
+
+                timings = {}
+                try:
+                    for candidate in self._candidate_batch_sizes()[self.model_type]:
+                        self._set_model_batch_size(candidate)
+                        candidate_timings = []
+                        for _ in range(2):
+                            t0 = time.perf_counter()
+                            self.model_instance.separate(probe_path)
+                            self.model_instance.flush_pending_writes()
+                            candidate_timings.append(time.perf_counter() - t0)
+                            self.model_instance.clear_file_specific_paths()
+                        timings[candidate] = candidate_timings
+                finally:
+                    self.model_instance.set_write_suppressed(False)
+                    self.output_dir = original_output_dir
+                    self.model_instance.output_dir = original_model_output_dir
+                    if original_batch is not None:
+                        self._set_model_batch_size(original_batch)
+
+            best = select_best_candidate(timings, tie_ratio=0.03)
+            self._set_model_batch_size(best)
+            self._tuning_cache[key] = {"batch_size": int(best), "timings": timings}
+            save_tuning_cache(self._tuning_cache)
+            self.logger.info(f"Auto-tuned batch size for {self.model_type}: {best}")
+        except Exception as exc:
+            self.logger.warning(f"Auto-tune failed, keeping configured batch size: {exc}")
+
+    def _clear_cache_now(self):
+        if self.model_instance:
+            self.model_instance.clear_gpu_cache()
+        else:
+            clear_mlx_cache(self.logger)
+        self._files_since_cache_clear = 0
+
+    def _apply_cache_policy_after_file(self):
+        policy = self.performance_params["cache_clear_policy"]
+        if policy == "aggressive":
+            self._clear_cache_now()
+            return
+        self._files_since_cache_clear += 1
+        if self._files_since_cache_clear >= 10:
+            self.logger.debug("Deferred cache policy: periodic clear after 10 files.")
+            self._clear_cache_now()
+
+    def _finalize_deferred_cache(self):
+        if self.performance_params["cache_clear_policy"] == "deferred":
+            self._clear_cache_now()
+
+    def _emit_perf_trace(self, audio_file_path, metrics):
+        if not self._perf_trace_writer:
+            return
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "file": os.path.abspath(audio_file_path),
+            "model": self.model_name,
+            "arch": self.model_type,
+            "metrics": metrics,
+            "params": {
+                "arch_params": self.arch_specific_params.get(self.model_type, {}),
+                "performance_params": self.performance_params,
+            },
+        }
+        self._perf_trace_writer.write(record)
 
     def get_package_distribution(self, package_name):
         try:
@@ -543,6 +717,7 @@ class Separator:
 
         model_filename, model_type, model_friendly_name, model_path, yaml_config_filename = self.download_model_files(model_filename)
         model_name = model_filename.split(".")[0]
+        self.model_name = model_name
         self.logger.debug(f"Model downloaded, friendly name: {model_friendly_name}, model_path: {model_path}")
 
         if model_path.lower().endswith(".yaml"):
@@ -567,6 +742,7 @@ class Separator:
             "output_single_stem": self.output_single_stem,
             "invert_using_spec": self.invert_using_spec,
             "sample_rate": self.sample_rate,
+            "performance_params": self.performance_params,
         }
 
         separator_classes = {
@@ -587,6 +763,7 @@ class Separator:
 
         self.logger.debug(f"Instantiating separator class for model type {model_type}: {separator_class}")
         self.model_instance = separator_class(common_config=common_params, arch_config=self.arch_specific_params[model_type])
+        self.model_type = model_type
 
         self.logger.debug("Loading model completed.")
         self.logger.info(f'Load model duration: {time.strftime("%H:%M:%S", time.gmtime(int(time.perf_counter() - load_model_start_time)))}')
@@ -613,6 +790,7 @@ class Separator:
                                 output_files.extend(files_output)
                             except Exception as e:
                                 self.logger.error(f"Failed to process file {full_path}: {e}")
+                                self._clear_cache_now()
             else:
                 self.logger.info(f"Processing file: {path}")
                 try:
@@ -620,7 +798,9 @@ class Separator:
                     output_files.extend(files_output)
                 except Exception as e:
                     self.logger.error(f"Failed to process file {path}: {e}")
+                    self._clear_cache_now()
 
+        self._finalize_deferred_cache()
         return output_files
 
     def _separate_file(self, audio_file_path, custom_output_names=None):
@@ -638,14 +818,25 @@ class Separator:
         self.logger.info(f"Starting separation process for audio_file_path: {audio_file_path}")
         separate_start_time = time.perf_counter()
 
+        if not self._skip_auto_tune:
+            self._auto_tune_batch_if_needed(audio_file_path)
         output_files = self.model_instance.separate(audio_file_path, custom_output_names)
+        self.model_instance.flush_pending_writes()
 
-        self.model_instance.clear_gpu_cache()
+        metrics = self.model_instance.get_perf_metrics()
+        cleanup_start = time.perf_counter()
         self.model_instance.clear_file_specific_paths()
+        self._apply_cache_policy_after_file()
+        cleanup_time = time.perf_counter() - cleanup_start
+        metrics["cleanup_s"] = float(metrics.get("cleanup_s", 0.0)) + cleanup_time
         self.print_uvr_vip_message()
 
         self.logger.debug("Separation process completed.")
-        self.logger.info(f'Separation duration: {time.strftime("%H:%M:%S", time.gmtime(int(time.perf_counter() - separate_start_time)))}')
+        total_time = time.perf_counter() - separate_start_time
+        metrics["total_s"] = total_time
+        self.last_perf_metrics = dict(metrics)
+        self._emit_perf_trace(audio_file_path, metrics)
+        self.logger.info(f'Separation duration: {time.strftime("%H:%M:%S", time.gmtime(int(total_time)))}')
 
         return output_files
 
@@ -657,12 +848,14 @@ class Separator:
 
         temp_dir = tempfile.mkdtemp(prefix="audio-separator-chunks-")
         self.logger.debug(f"Created temporary directory for chunks: {temp_dir}")
+        original_skip_auto_tune = self._skip_auto_tune
 
         try:
             chunker = AudioChunker(self.chunk_duration, self.logger)
             chunk_paths = chunker.split_audio(audio_file_path, temp_dir)
 
             processed_chunks_by_stem = {}
+            self._skip_auto_tune = True
 
             for i, chunk_path in enumerate(chunk_paths):
                 self.logger.info(f"Processing chunk {i+1}/{len(chunk_paths)}: {chunk_path}")
@@ -699,9 +892,6 @@ class Separator:
                     if self.model_instance:
                         self.model_instance.output_dir = original_model_output_dir
 
-                if self.model_instance:
-                    self.model_instance.clear_gpu_cache()
-
             base_name = os.path.splitext(os.path.basename(audio_file_path))[0]
             output_files = []
 
@@ -724,6 +914,7 @@ class Separator:
 
             return output_files
         finally:
+            self._skip_auto_tune = original_skip_auto_tune
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
