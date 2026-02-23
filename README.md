@@ -121,6 +121,16 @@ Optional `--quality-reference-manifest /path/to/references.json` enables SI-SDR/
 Without reference stems, proxy quality metrics are emitted as informational by default (use `--quality-enforce-proxy-gate` to make them pass/fail).
 Use `--python-mps-latency` to include optional python-audio-separator (MPS) latency deltas in the same report.
 Report outputs include a reproducibility appendix (command, git commit/dirty state, platform versions, corpus/model manifests with optional SHA256 hashes).
+For a full release checklist, see `/Users/sam/Code/mlx-audio-separator/docs/reproducibility.md`.
+
+Reference manifest scaffold helper:
+
+```bash
+python /Users/sam/Code/mlx-audio-separator/scripts/perf/generate_reference_manifest.py \
+  --corpus-file /tmp/corpus.txt \
+  --output-json /tmp/reference_manifest.json \
+  --search-dir /path/to/reference_stems
+```
 
 ## Requirements
 
