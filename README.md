@@ -140,11 +140,15 @@ python /Users/sam/Code/mlx-audio-separator/scripts/perf/generate_reference_manif
 
 ## License
 
-MIT
+MIT.
+
+This project includes code and implementation ideas adapted from
+[`python-audio-separator`](https://github.com/nomadkaraoke/python-audio-separator)
+(MIT). See `/Users/sam/Code/mlx-audio-separator/THIRD_PARTY_NOTICES.md` for attribution and license notices.
 
 ## Credits
 
 - [BS-Roformer](https://arxiv.org/abs/2309.02612) — Band-Split Roformer for music source separation
 - [Demucs](https://github.com/facebookresearch/demucs) — Facebook Research hybrid transformer model
 - [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) — VR and MDX model architectures and pretrained weights
-- [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) — Original Python implementation
+- [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) — Original Python implementation by Nomad Karaoke / karaokenerds maintainers and contributors

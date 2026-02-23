@@ -27,6 +27,9 @@ This project supports reproducible performance and quality claims without shippi
 
 6. Result artifacts:
 - Report JSON and Markdown outputs from `scripts/perf/run_optimization_report.py`.
+7. Third-party attribution:
+- Include third-party notices and upstream license references for adapted code paths.
+- In this repo, see `/Users/sam/Code/mlx-audio-separator/THIRD_PARTY_NOTICES.md`.
 
 ## Step 1: Prepare Corpus List
 
