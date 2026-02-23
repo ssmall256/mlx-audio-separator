@@ -105,6 +105,23 @@ mlx-audio-separator \
   --benchmark_profile
 ```
 
+Unified optimization report (latency + deterministic parity + fast-mode quality):
+
+```bash
+python /Users/sam/Code/mlx-audio-separator/scripts/perf/run_optimization_report.py \
+  --corpus-file /tmp/corpus.txt \
+  --baseline-config /tmp/baseline.json \
+  --candidate-config /tmp/candidate.json \
+  --models htdemucs.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
+  --parity-strict-demucs \
+  --parity-max-files 2
+```
+
+Optional `--quality-reference-manifest /path/to/references.json` enables SI-SDR/SDR delta quality gates against reference stems.
+Without reference stems, proxy quality metrics are emitted as informational by default (use `--quality-enforce-proxy-gate` to make them pass/fail).
+Use `--python-mps-latency` to include optional python-audio-separator (MPS) latency deltas in the same report.
+Report outputs include a reproducibility appendix (command, git commit/dirty state, platform versions, corpus/model manifests with optional SHA256 hashes).
+
 ## Requirements
 
 - macOS 13+ (Ventura or later)
