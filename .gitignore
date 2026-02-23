@@ -36,3 +36,7 @@ Thumbs.db
 *.ckpt
 *.safetensors
 *.pt
+
+# Local benchmark/perf artifacts
+benchmark_results.json
+perf_reports/
