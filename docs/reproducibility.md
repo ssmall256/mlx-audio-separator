@@ -4,32 +4,23 @@ This project supports reproducible performance and quality claims without shippi
 
 ## What To Publish
 
-1. Dataset metadata:
-- Dataset name, version, split(s), and license terms.
-- Example: `MUSDB18-HQ`, `test split`.
+1. Dataset metadata: dataset name, version, split, and license terms (example: `MUSDB18-HQ`, `test` split).
+2. Track manifest: track IDs or filenames included in evaluation; do not include audio files in this repository.
+3. Reference stem manifest: JSON map of `mix_path -> {stem_name: reference_stem_path}`.
+4. Reproduction commands: exact commands used for final report generation, including parity, quality, and latency flags.
+5. Runtime and revision metadata: git commit SHA/branch/dirty state, Python/package versions, and model hashes.
+6. Result artifacts: report JSON and Markdown outputs from `scripts/perf/run_optimization_report.py`.
+7. Third-party attribution: include upstream license notices for adapted code paths (`THIRD_PARTY_NOTICES.md`).
 
-2. Track manifest (no audio files):
-- Track IDs / filenames included in your evaluation.
-- Do not include raw audio in this repository.
+## Minimum Reproducibility Packet
 
-3. Reference stem manifest format:
-- JSON map of `mix_path -> {stem_name: reference_stem_path}`.
-- Paths are local in your environment and are not required to exist for external readers.
+For a minimally credible external review, publish at least:
 
-4. Reproduction commands:
-- Command line used to generate the final report(s).
-- Include all flags (especially parity/quality/latency settings).
-
-5. Runtime and revision metadata:
-- Git commit SHA / branch / dirty state.
-- Python + package versions.
-- Model file hashes.
-
-6. Result artifacts:
-- Report JSON and Markdown outputs from `scripts/perf/run_optimization_report.py`.
-7. Third-party attribution:
-- Include third-party notices and upstream license references for adapted code paths.
-- In this repo, see `/Users/sam/Code/mlx-audio-separator/THIRD_PARTY_NOTICES.md`.
+- Dataset and split statement with license terms.
+- Track manifest (`tracks.txt`) with IDs/filenames only.
+- Baseline and candidate config files.
+- One exact report command line.
+- Final report artifacts (`optimization_report.json` and `optimization_report.md`).
 
 ## Step 1: Prepare Corpus List
 
@@ -44,7 +35,7 @@ Create a text file with one mix path per line:
 ## Step 2: Build Reference Manifest Scaffold
 
 ```bash
-python /Users/sam/Code/mlx-audio-separator/scripts/perf/generate_reference_manifest.py \
+python scripts/perf/generate_reference_manifest.py \
   --corpus-file /path/to/corpus.txt \
   --output-json /path/to/reference_manifest.json \
   --search-dir /path/to/reference_stems \
@@ -58,7 +49,7 @@ Notes:
 ## Step 3: Run Unified Optimization Report
 
 ```bash
-python /Users/sam/Code/mlx-audio-separator/scripts/perf/run_optimization_report.py \
+python scripts/perf/run_optimization_report.py \
   --corpus-file /path/to/corpus.txt \
   --baseline-config /path/to/baseline.json \
   --candidate-config /path/to/candidate.json \

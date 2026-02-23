@@ -1,6 +1,22 @@
 # mlx-audio-separator
 
-MLX-native audio stem separation for Apple Silicon. Separate vocals, instruments, drums, bass, and more from any audio file — no PyTorch or ONNX runtime required.
+MLX-native music stem separation for Apple Silicon (macOS), with no PyTorch or ONNX runtime required at inference time.
+
+## What This Project Is
+
+- Fast local stem separation on Apple Silicon using MLX.
+- Multi-architecture support: Roformer, MDXC, MDX, VR, and Demucs.
+- Opt-in latency controls, benchmarking, and reproducibility tooling.
+
+## What This Project Is Not
+
+- A model-training framework.
+- A cross-platform inference package (this project targets Apple Silicon + MLX).
+
+## Documentation Map
+
+- Reproducibility and release evidence checklist: `docs/reproducibility.md`
+- Third-party attribution and license notices: `THIRD_PARTY_NOTICES.md`
 
 ## Installation
 
@@ -8,59 +24,51 @@ MLX-native audio stem separation for Apple Silicon. Separate vocals, instruments
 pip install mlx-audio-separator
 ```
 
-For weight conversion from PyTorch/ONNX checkpoints (first-time setup only):
+Optional conversion extras for converting some upstream checkpoints:
 
 ```bash
-pip install mlx-audio-separator[convert]
+pip install "mlx-audio-separator[convert]"
 ```
 
-## Quick Start
-
-### CLI
+## Quick Start (CLI)
 
 ```bash
-# Separate vocals from a song (default: BS-Roformer)
+# Default separation (default model)
 mlx-audio-separator song.mp3
 
 # Use a specific model
 mlx-audio-separator song.mp3 -m htdemucs_ft.yaml
 
-# List all available models
+# List available models
 mlx-audio-separator --list_models
-
-# Opt-in latency-safe mode with perf trace output
-mlx-audio-separator song.mp3 --speed_mode latency_safe --perf_trace
-
-# Auto-tune batch size for current model/audio (first run probes, then caches)
-mlx-audio-separator song.mp3 --auto_tune_batch --tune_probe_seconds 8
 ```
 
-### Python API
+## Quick Start (Python)
 
 ```python
 from mlx_audio_separator import Separator
 
 sep = Separator()
 sep.load_model()
-stems = sep.separate("song.mp3")
-print(stems)  # list of output file paths
+outputs = sep.separate("song.mp3")
+print(outputs)
 ```
 
-## Supported Models
+## Supported Architectures
 
-| Architecture | Models | Description |
-|---|---|---|
-| Roformer | 78 | BS-Roformer, MelBand-Roformer |
-| MDXC | 2 | MDX23C |
-| MDX | 1 | ConvTDFNet |
-| VR | 2 | CascadedASPPNet, CascadedNet |
-| **Total** | **83** | |
+| Architecture | Notes |
+|---|---|
+| Roformer | BS-Roformer and MelBand-Roformer families |
+| MDXC | MDX23C-style checkpoints |
+| MDX | ConvTDFNet-style ONNX checkpoints |
+| VR | UVR VR-family checkpoints |
+| Demucs | Hybrid transformer Demucs variants |
 
-Run `mlx-audio-separator --list_models` to see the full list.
+Use `mlx-audio-separator --list_models` for the current catalog.
 
-## Performance Tuning
+## Performance Controls (Opt-In)
 
-The default behavior is unchanged. Use opt-in flags to tune latency:
+Defaults remain behavior-compatible. Enable speed controls explicitly:
 
 ```bash
 mlx-audio-separator song.mp3 \
@@ -71,7 +79,7 @@ mlx-audio-separator song.mp3 \
   --perf_trace_path ./perf_trace.jsonl
 ```
 
-Available performance options:
+Available flags:
 
 - `--speed_mode {default,latency_safe}`
 - `--auto_tune_batch`
@@ -81,21 +89,18 @@ Available performance options:
 - `--perf_trace`
 - `--perf_trace_path <path>`
 
-Current `latency_safe` preset recommendations (strict output-equivalent path, opt-in):
+Current `latency_safe` preset recommendations:
 
 - `Demucs`: `batch_size=8`
-- `MDXC` (Roformer): `batch_size=1`
+- `MDXC`: `batch_size=1`
 - `MDX`: `batch_size=1`
 - `VR`: `batch_size=1`
 
-Deterministic equivalence checks use strict pass/fail gating for `MDXC`, `MDX`, and `VR` by default.
-`Demucs` is reported as informational unless strict Demucs gating is explicitly enabled.
-When equivalence utilities run, they automatically enable deterministic fused-kernel mode for reproducible Demucs comparisons.
-In deterministic mode, Demucs keeps fused `GroupNorm+GELU`, enables strict forward eval barriers, disables fused iSTFT and Wiener `vmap` parallelization, and forces deterministic overlap-add accumulation to reduce run-to-run drift.
+Deterministic equivalence checks default to strict pass/fail gating for `MDXC`, `MDX`, and `VR`. `Demucs` strict gating remains opt-in; deterministic Demucs mode still keeps fused `GroupNorm+GELU` while enforcing deterministic evaluation controls.
 
 ## Benchmarking
 
-Benchmark now supports warmup/repeat medians and optional phase profiling:
+Single-file benchmark with warmup/repeats and optional phase profiling:
 
 ```bash
 mlx-audio-separator \
@@ -105,32 +110,36 @@ mlx-audio-separator \
   --benchmark_profile
 ```
 
-Unified optimization report (latency + deterministic parity + fast-mode quality):
+Unified optimization report (latency + parity + quality):
 
 ```bash
-python /Users/sam/Code/mlx-audio-separator/scripts/perf/run_optimization_report.py \
-  --corpus-file /tmp/corpus.txt \
-  --baseline-config /tmp/baseline.json \
-  --candidate-config /tmp/candidate.json \
+python scripts/perf/run_optimization_report.py \
+  --corpus-file /path/to/corpus.txt \
+  --baseline-config /path/to/baseline.json \
+  --candidate-config /path/to/candidate.json \
   --models htdemucs.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
-  --parity-strict-demucs \
-  --parity-max-files 2
+  --output-json /path/to/optimization_report.json \
+  --output-markdown /path/to/optimization_report.md
 ```
 
-Optional `--quality-reference-manifest /path/to/references.json` enables SI-SDR/SDR delta quality gates against reference stems.
-Without reference stems, proxy quality metrics are emitted as informational by default (use `--quality-enforce-proxy-gate` to make them pass/fail).
-Use `--python-mps-latency` to include optional python-audio-separator (MPS) latency deltas in the same report.
-Report outputs include a reproducibility appendix (command, git commit/dirty state, platform versions, corpus/model manifests with optional SHA256 hashes).
-For a full release checklist, see `/Users/sam/Code/mlx-audio-separator/docs/reproducibility.md`.
+Optional report flags:
+
+- `--quality-reference-manifest /path/to/reference_manifest.json`
+- `--parity-strict-demucs`
+- `--python-mps-latency`
 
 Reference manifest scaffold helper:
 
 ```bash
-python /Users/sam/Code/mlx-audio-separator/scripts/perf/generate_reference_manifest.py \
-  --corpus-file /tmp/corpus.txt \
-  --output-json /tmp/reference_manifest.json \
+python scripts/perf/generate_reference_manifest.py \
+  --corpus-file /path/to/corpus.txt \
+  --output-json /path/to/reference_manifest.json \
   --search-dir /path/to/reference_stems
 ```
+
+## Reproducibility
+
+For publication and release-quality reproducibility guidance, see `docs/reproducibility.md`.
 
 ## Requirements
 
@@ -138,17 +147,15 @@ python /Users/sam/Code/mlx-audio-separator/scripts/perf/generate_reference_manif
 - Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
 
-## License
+## License and Attribution
 
-MIT.
+This project is MIT licensed.
 
-This project includes code and implementation ideas adapted from
-[`python-audio-separator`](https://github.com/nomadkaraoke/python-audio-separator)
-(MIT). See `/Users/sam/Code/mlx-audio-separator/THIRD_PARTY_NOTICES.md` for attribution and license notices.
+Portions are adapted from [`python-audio-separator`](https://github.com/nomadkaraoke/python-audio-separator) (MIT). See `THIRD_PARTY_NOTICES.md` for attribution and license notice details.
 
 ## Credits
 
-- [BS-Roformer](https://arxiv.org/abs/2309.02612) — Band-Split Roformer for music source separation
-- [Demucs](https://github.com/facebookresearch/demucs) — Facebook Research hybrid transformer model
-- [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) — VR and MDX model architectures and pretrained weights
-- [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) — Original Python implementation by Nomad Karaoke / karaokenerds maintainers and contributors
+- [BS-Roformer](https://arxiv.org/abs/2309.02612)
+- [Demucs](https://github.com/facebookresearch/demucs)
+- [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
+- [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
