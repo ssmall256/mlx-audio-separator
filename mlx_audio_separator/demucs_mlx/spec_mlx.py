@@ -23,6 +23,25 @@ __all__ = [
 ]
 
 
+def _resolve_demucs_istft_allow_fused(allow_fused: bool) -> bool:
+    """Resolve Demucs iSTFT fusion mode with optional environment override.
+
+    Environment:
+      MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED = 1|0|true|false|on|off
+    """
+    import os
+
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED")
+    if raw is None:
+        return bool(allow_fused)
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return bool(allow_fused)
+
+
 def spectro(
     x: mx.array,
     *,
@@ -153,7 +172,7 @@ def ispectro(
     istft_kw = dict(
         length=length,
         torch_like=bool(torch_like),
-        allow_fused=bool(allow_fused),
+        allow_fused=_resolve_demucs_istft_allow_fused(bool(allow_fused)),
         safety=safety,
     )
 

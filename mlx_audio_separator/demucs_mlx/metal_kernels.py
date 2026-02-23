@@ -37,7 +37,62 @@ def _has_metal() -> bool:
 HAS_METAL = _has_metal()
 
 
-def _stable_threadgroup_size(elems_per_group: int) -> int:
+def _fused_groupnorm_mode() -> str:
+    """Runtime mode for fused GroupNorm kernels.
+
+    Controlled by:
+      MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE = all | glu_only | gelu_only | off
+
+    Defaults to `all`.
+    """
+    raw_env = os.getenv("MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE")
+    if raw_env is None or raw_env.strip() == "":
+        deterministic = os.getenv("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "").strip().lower()
+        # In deterministic mode, disable fused GLU due known run-to-run drift.
+        if deterministic in {"1", "true", "yes", "on"}:
+            return "gelu_only"
+        return "all"
+    raw = raw_env.strip().lower()
+    if raw in {"", "all", "on", "true", "1"}:
+        return "all"
+    if raw in {"glu_only", "glu"}:
+        return "glu_only"
+    if raw in {"gelu_only", "gelu"}:
+        return "gelu_only"
+    if raw in {"off", "none", "unfused", "false", "0"}:
+        return "off"
+    if raw in {"safe", "default"}:
+        return "off"
+    return "all"
+
+
+def _explicit_threadgroup_cap(env_var: str) -> int | None:
+    """Optional aligned threadgroup cap override from environment."""
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    value = max(32, min(1024, value))
+    return ((value + 31) // 32) * 32
+
+
+def _fused_groupnorm_glu_impl() -> str:
+    """Implementation selector for GroupNorm+GLU path.
+
+    Values:
+      - hybrid (default): float32 GroupNorm+affine + fused GLU kernel
+      - legacy: monolithic fused GroupNorm+GLU Metal kernel
+    """
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_GN_GLU_IMPL", "hybrid").strip().lower()
+    if raw in {"legacy", "old"}:
+        return "legacy"
+    return "hybrid"
+
+
+def _stable_threadgroup_size(elems_per_group: int, cap_env_var: str | None = None) -> int:
     """Choose a stable SIMD-aligned threadgroup size for reduction kernels.
 
     Fast path uses up to 1024 threads. Deterministic mode caps to 256 to avoid
@@ -49,6 +104,10 @@ def _stable_threadgroup_size(elems_per_group: int) -> int:
     """
     deterministic = os.getenv("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "").strip().lower()
     max_threads = 256 if deterministic in {"1", "true", "yes", "on"} else 1024
+    if cap_env_var:
+        explicit_cap = _explicit_threadgroup_cap(cap_env_var)
+        if explicit_cap is not None:
+            max_threads = min(max_threads, explicit_cap)
     return min(max_threads, max(32, ((int(elems_per_group) + 31) // 32) * 32))
 
 # ==============================================================================
@@ -263,18 +322,52 @@ def _groupnorm_gelu_fallback(
     x: mx.array, weight: mx.array, bias: mx.array,
     num_groups: int, eps: float = 1e-5,
 ) -> mx.array:
-    """Pure-MLX GroupNorm + GELU (no Metal required)."""
+    """Pure-MLX GroupNorm + GELU (no Metal required).
+
+    Uses float32 accumulation for numerical parity with fused kernels and
+    PyTorch-style GroupNorm behavior on float16 inputs.
+    """
     B, C = x.shape[0], x.shape[1]
     cpg = C // num_groups
-    x_r = x.reshape(B, num_groups, cpg, *x.shape[2:])
+    x32 = x.astype(mx.float32)
+    x_r = x32.reshape(B, num_groups, cpg, *x.shape[2:])
     axes = tuple(range(2, x_r.ndim))
     mean = x_r.mean(axis=axes, keepdims=True)
     var = ((x_r - mean) ** 2).mean(axis=axes, keepdims=True)
     x_norm = (x_r - mean) * mx.rsqrt(var + eps)
     x_out = x_norm.reshape(x.shape)
     w_shape = [1, C] + [1] * (x.ndim - 2)
-    x_out = x_out * weight.reshape(w_shape) + bias.reshape(w_shape)
-    return nn.gelu(x_out)
+    x_out = x_out * weight.astype(mx.float32).reshape(w_shape) + bias.astype(mx.float32).reshape(w_shape)
+    return nn.gelu(x_out).astype(x.dtype)
+
+
+def _groupnorm_affine_fp32(
+    x: mx.array, weight: mx.array, bias: mx.array,
+    num_groups: int, eps: float = 1e-5,
+) -> mx.array:
+    """GroupNorm + affine in float32, returning float32 tensor."""
+    B = x.shape[0]
+    C = x.shape[1]
+    channels_per_group = C // num_groups
+    x32 = x.astype(mx.float32)
+    x_r = x32.reshape(B, num_groups, channels_per_group, *x.shape[2:])
+    axes = tuple(range(2, x_r.ndim))
+    mean = x_r.mean(axis=axes, keepdims=True)
+    var = ((x_r - mean) ** 2).mean(axis=axes, keepdims=True)
+    x_norm = (x_r - mean) * mx.rsqrt(var + eps)
+    x_out = x_norm.reshape(x.shape)
+    w_shape = [1, C] + [1] * (x.ndim - 2)
+    return x_out * weight.astype(mx.float32).reshape(w_shape) + bias.astype(mx.float32).reshape(w_shape)
+
+
+def _groupnorm_glu_fallback(
+    x: mx.array, weight: mx.array, bias: mx.array,
+    num_groups: int, eps: float = 1e-5,
+) -> mx.array:
+    """Pure-MLX GroupNorm + GLU fallback with float32 accumulation."""
+    normed = _groupnorm_affine_fp32(x, weight, bias, num_groups, eps)
+    a, b = mx.split(normed, 2, axis=1)
+    return (a * mx.sigmoid(b)).astype(x.dtype)
 
 
 def fused_groupnorm_gelu(
@@ -290,6 +383,10 @@ def fused_groupnorm_gelu(
         x = groupnorm(x, weight, bias, num_groups, eps)
         x = gelu(x)
     """
+    mode = _fused_groupnorm_mode()
+    if mode in {"glu_only", "off"}:
+        return _groupnorm_gelu_fallback(x, weight, bias, num_groups, eps)
+
     if not HAS_METAL:
         return _groupnorm_gelu_fallback(x, weight, bias, num_groups, eps)
 
@@ -312,7 +409,10 @@ def fused_groupnorm_gelu(
 
     total_groups = B * num_groups
     elems_per_group = channels_per_group * spatial_size
-    tg = _stable_threadgroup_size(elems_per_group)
+    tg = _stable_threadgroup_size(
+        elems_per_group,
+        cap_env_var="MLX_AUDIO_SEPARATOR_GN_GELU_TG_CAP",
+    )
 
     result = _get_groupnorm_gelu_kernel()(
         inputs=[x_contig, weight, bias, eps_arr, params],
@@ -500,20 +600,23 @@ def fused_groupnorm_glu(
         raise ValueError(f"channels {C_full} must be even for GLU")
     channels_per_group = C_full // num_groups
 
+    mode = _fused_groupnorm_mode()
+
+    if mode in {"gelu_only", "off"}:
+        # Respect runtime mode: disable fused GLU kernel.
+        return _groupnorm_glu_fallback(x, weight, bias, num_groups, eps)
+
     if not HAS_METAL or num_groups > 1:
         # Pure-MLX fallback: separate GroupNorm + GLU.
         # Also used when num_groups > 1 because the GLU split crosses group
         # boundaries, which can't be handled in a single kernel dispatch.
-        x_r = x.reshape(B, num_groups, channels_per_group, *x.shape[2:])
-        axes = tuple(range(2, x_r.ndim))
-        mean = x_r.mean(axis=axes, keepdims=True)
-        var = ((x_r - mean) ** 2).mean(axis=axes, keepdims=True)
-        x_norm = (x_r - mean) * mx.rsqrt(var + eps)
-        x_out = x_norm.reshape(x.shape)
-        w_shape = [1, C_full] + [1] * (x.ndim - 2)
-        normed = x_out * weight.reshape(w_shape) + bias.reshape(w_shape)
-        a, b = mx.split(normed, 2, axis=1)
-        return a * mx.sigmoid(b)
+        return _groupnorm_glu_fallback(x, weight, bias, num_groups, eps)
+
+    if _fused_groupnorm_glu_impl() != "legacy":
+        # Deterministic hybrid path: GroupNorm+affine in float32 followed by
+        # a fused GLU kernel launch.
+        normed = _groupnorm_affine_fp32(x, weight, bias, num_groups, eps).astype(x.dtype)
+        return fused_glu(normed, axis=1)
 
     x_contig = mx.contiguous(x.reshape(B, C_full, spatial_size))
     weight = mx.contiguous(weight.astype(mx.float32))
@@ -525,7 +628,10 @@ def fused_groupnorm_glu(
 
     total_groups = B * num_groups
     elems_per_group = channels_per_group * spatial_size
-    tg = _stable_threadgroup_size(elems_per_group)
+    tg = _stable_threadgroup_size(
+        elems_per_group,
+        cap_env_var="MLX_AUDIO_SEPARATOR_GN_GLU_TG_CAP",
+    )
 
     out_shape = list(orig_shape)
     out_shape[1] = C_half
