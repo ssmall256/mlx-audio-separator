@@ -537,7 +537,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mlx", specifier = ">=0.22" },
+    { name = "mlx", specifier = ">=0.30.3" },
     { name = "mlx-audio-io" },
     { name = "mlx-spectro" },
     { name = "numpy", specifier = ">=2" },

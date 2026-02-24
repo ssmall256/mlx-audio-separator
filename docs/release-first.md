@@ -61,6 +61,23 @@ uv run python scripts/perf/run_optimization_report.py \
   --output-markdown /tmp/optimization_report.md
 ```
 
+Generate MLX vs python-audio-separator ABBA comparison (overlap set):
+
+```bash
+uv run python scripts/perf/mlx_vs_pas_abba.py \
+  --corpus-file /path/to/corpus.txt \
+  --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
+  --model-file-dir /tmp/audio-separator-models \
+  --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
+  --pas-config '{"output_format":"WAV"}' \
+  --warmup 1 \
+  --order-repeats 1 \
+  --randomize-abba \
+  --min-speedup 1.0 \
+  --output-json /tmp/mlx_vs_pas_abba.json \
+  --output-markdown /tmp/mlx_vs_pas_abba.md
+```
+
 ## Go / No-Go
 
 Go only if all are true:
@@ -68,6 +85,7 @@ Go only if all are true:
 1. `uv run pytest -q` passes.
 2. Release readiness gate script exits `0`.
 3. Optimization report contains no architecture-level regressions you consider release blockers.
+4. MLX vs PAS ABBA report provides the release comparison evidence you want to publish.
 
 No-Go if any are false. Fix and re-run from benchmark stage.
 

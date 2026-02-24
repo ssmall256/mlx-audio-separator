@@ -9,7 +9,7 @@ description = "MLX-native audio stem separation for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [{name = "Sam"}]
+authors = [{name = "ssmall256"}]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
@@ -24,7 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "mlx>=0.22",
+    "mlx>=0.30.3",
     "mlx-audio-io",
     "mlx-spectro",
     "numpy>=2",
@@ -49,9 +49,9 @@ convert = [
 mlx-audio-separator = "mlx_audio_separator.utils.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/sam/mlx-audio-separator"
-Repository = "https://github.com/sam/mlx-audio-separator"
-Issues = "https://github.com/sam/mlx-audio-separator/issues"
+Homepage = "https://github.com/ssmall256/mlx-audio-separator"
+Repository = "https://github.com/ssmall256/mlx-audio-separator"
+Issues = "https://github.com/ssmall256/mlx-audio-separator/issues"
 
 [tool.ruff]
 line-length = 140

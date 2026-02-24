@@ -141,6 +141,17 @@ python scripts/perf/run_optimization_report.py \
   --output-markdown /path/to/optimization_report.md
 ```
 
+MLX vs python-audio-separator ABBA latency comparison on overlapping models:
+
+```bash
+python scripts/perf/mlx_vs_pas_abba.py \
+  --corpus-file /path/to/corpus.txt \
+  --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
+  --model-file-dir /tmp/audio-separator-models \
+  --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
+  --pas-config '{"output_format":"WAV"}'
+```
+
 Optional report flags:
 
 - `--quality-reference-manifest /path/to/reference_manifest.json`
