@@ -32,8 +32,20 @@ def test_validate_outputs_accepts_relative_paths_in_output_dir(tmp_path):
     f1.write_bytes(b"1")
     f2.write_bytes(b"2")
 
-    ok, reason, resolved = mod._validate_outputs(["a.wav", "b.wav"], output_dir=out_dir)
+    ok, reason, resolved = mod._validate_outputs(["a.wav", "b.wav"], output_dir=out_dir, wait_seconds=0.0)
     assert ok is True
     assert reason is None
     assert [Path(x).name for x in resolved] == ["a.wav", "b.wav"]
 
+
+def test_validate_outputs_missing_file_returns_reason(tmp_path):
+    mod = _load_abba_module()
+    out_dir = tmp_path / "outs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    f1 = out_dir / "a.wav"
+    f1.write_bytes(b"1")
+
+    ok, reason, resolved = mod._validate_outputs(["a.wav", "missing.wav"], output_dir=out_dir, wait_seconds=0.0)
+    assert ok is False
+    assert reason and "missing output files" in reason
+    assert len(resolved) == 2

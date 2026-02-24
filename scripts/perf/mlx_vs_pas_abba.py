@@ -108,10 +108,24 @@ def _cleanup_outputs(paths: list[str] | None):
             pass
 
 
-def _validate_outputs(paths: list[str] | None, output_dir: str | Path | None) -> tuple[bool, str | None, list[str]]:
+def _validate_outputs(
+    paths: list[str] | None,
+    output_dir: str | Path | None,
+    wait_seconds: float = 0.0,
+) -> tuple[bool, str | None, list[str]]:
     resolved = _normalize_output_paths(paths, output_dir=output_dir)
     if not paths:
         return False, "no output files returned", resolved
+
+    deadline = time.perf_counter() + max(0.0, float(wait_seconds))
+    while True:
+        missing = [p for p in resolved if not os.path.isfile(p)]
+        if not missing:
+            break
+        if time.perf_counter() >= deadline:
+            return False, f"missing output files: {len(missing)}", resolved
+        time.sleep(0.05)
+
     missing = [p for p in resolved if not os.path.isfile(p)]
     if missing:
         return False, f"missing output files: {len(missing)}", resolved
@@ -223,6 +237,7 @@ def run_model(
         "delta_pct_mlx_vs_pas": None,
         "pass": False,
         "error": None,
+        "diagnostic": None,
     }
 
     try:
@@ -263,7 +278,11 @@ def run_model(
                 _, sep = backends[leg]
                 for _ in range(int(max(0, warmup))):
                     outs = sep.separate(audio_path)
-                    _, _, resolved = _validate_outputs(outs, output_dir=(mlx_out if leg == "A" else pas_out))
+                    _, _, resolved = _validate_outputs(
+                        outs,
+                        output_dir=(mlx_out if leg == "A" else pas_out),
+                        wait_seconds=(2.0 if leg == "B" else 0.5),
+                    )
                     _cleanup_outputs(resolved)
 
             leg_sequence = _build_leg_sequence(
@@ -277,9 +296,28 @@ def run_model(
                 t0 = time.perf_counter()
                 outs = sep.separate(audio_path)
                 dt = time.perf_counter() - t0
-                ok, reason, resolved = _validate_outputs(outs, output_dir=(mlx_out if backend_name == "mlx" else pas_out))
+                backend_out_dir = mlx_out if backend_name == "mlx" else pas_out
+                ok, reason, resolved = _validate_outputs(
+                    outs,
+                    output_dir=backend_out_dir,
+                    wait_seconds=(2.0 if backend_name == "pas" else 0.5),
+                )
                 _cleanup_outputs(resolved)
                 if not ok:
+                    dir_listing = []
+                    try:
+                        if Path(backend_out_dir).is_dir():
+                            dir_listing = sorted([p.name for p in Path(backend_out_dir).iterdir()])[:20]
+                    except Exception:
+                        dir_listing = []
+                    row["diagnostic"] = {
+                        "backend": backend_name,
+                        "audio_path": audio_path,
+                        "raw_outputs": [str(x) for x in (outs or [])],
+                        "resolved_outputs": resolved,
+                        "output_dir": str(backend_out_dir),
+                        "output_dir_listing_head": dir_listing,
+                    }
                     raise RuntimeError(f"{backend_name} invalid outputs: {reason}")
                 if backend_name == "mlx":
                     row["runs_mlx_s"].append(round(dt, 6))
