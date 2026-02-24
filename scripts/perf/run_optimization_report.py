@@ -18,8 +18,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+import mlx_audio_io as mac
 import numpy as np
-import soundfile as sf
 
 from compare_latency import (
     _build_run_config,
@@ -42,6 +42,15 @@ def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def _load_audio_2d(path: str) -> tuple[np.ndarray, int]:
+    """Load audio as float32 NumPy array with shape (frames, channels)."""
+    audio_mx, sample_rate = mac.load(str(path), dtype="float32")
+    audio = np.array(audio_mx, copy=False)
+    if audio.ndim == 1:
+        audio = audio[:, np.newaxis]
+    return audio, int(sample_rate)
 
 
 def _run_cmd(cmd: list[str]) -> tuple[bool, str]:
@@ -88,7 +97,7 @@ def collect_repro_metadata(
             st = p.stat()
             row["size_bytes"] = int(st.st_size)
             try:
-                audio, sr = sf.read(str(p), always_2d=True)
+                audio, sr = _load_audio_2d(str(p))
                 row["sample_rate"] = int(sr)
                 row["channels"] = int(audio.shape[1])
                 row["frames"] = int(audio.shape[0])
@@ -308,7 +317,7 @@ def _load_reference_manifest(path: Path) -> dict[str, dict[str, str]]:
 def _read_reference_stems(reference_paths: dict[str, str]) -> dict[str, tuple[np.ndarray, int]]:
     out: dict[str, tuple[np.ndarray, int]] = {}
     for stem, path in reference_paths.items():
-        audio, sample_rate = sf.read(path, always_2d=True)
+        audio, sample_rate = _load_audio_2d(path)
         out[stem] = (audio, int(sample_rate))
     return out
 

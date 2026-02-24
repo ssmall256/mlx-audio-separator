@@ -15,6 +15,7 @@ Wave 4 is performance work after release stabilization. All new behavior remains
 1. Add optional profile variants under `performance_params` and CLI:
    - `speed_mode=latency_safe_v2` (opt-in)
    - `auto_tune_batch=true` with per-arch candidate constraints
+   - `experimental_vectorized_chunking=true` (MDXC-only experimental data path)
 2. Keep current defaults unchanged.
 
 Acceptance:

@@ -25,6 +25,14 @@ def detect_model_type(model_path: str, config: Dict[str, Any]) -> str:
 
     # Check filename
     path_lower = model_path.lower()
+    explicit_bs_filenames = {
+        "mdx23c-8kfft-instvoc_hq.ckpt",
+        "mdx23c-de-reverb-aufr33-jarredou.ckpt",
+        "mdx23c-drumsep-aufr33-jarredou.ckpt",
+    }
+    base_name = os.path.basename(path_lower)
+    if base_name in explicit_bs_filenames:
+        return "bs_roformer"
     if any(s in path_lower for s in ("mel_band_roformer", "mel-band-roformer", "melband")):
         return "mel_band_roformer"
     if any(s in path_lower for s in ("bs_roformer", "bs-roformer", "bsroformer")):

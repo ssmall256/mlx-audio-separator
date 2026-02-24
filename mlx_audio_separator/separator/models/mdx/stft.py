@@ -75,38 +75,43 @@ class STFT:
         """Inverse STFT.
 
         Args:
-            spec: Spectrogram (N, 4, dim_f, frames) — stereo real/imag interleaved
+            spec: Spectrogram (..., 4, dim_f, frames) — stereo real/imag interleaved
 
         Returns:
-            Audio tensor (N, 2, T)
+            Audio tensor (..., 2, T)
         """
-        N = spec.shape[0]
-        frames = spec.shape[3]
+        batch_dims = spec.shape[:-3]
+        channels = spec.shape[-3]
+        frames = spec.shape[-1]
 
         # Pad frequency dimension back to n_bins
         if self.dim_f < self.n_bins:
             pad_size = self.n_bins - self.dim_f
-            freq_pad = mx.zeros((N, 4, pad_size, frames), dtype=spec.dtype)
-            spec = mx.concatenate([spec, freq_pad], axis=2)
+            freq_pad = mx.zeros((*batch_dims, channels, pad_size, frames), dtype=spec.dtype)
+            spec = mx.concatenate([spec, freq_pad], axis=-2)
 
-        # spec: (N, 4, n_bins, frames)
-        # Reshape to (N, 2, 2, n_bins, frames) — (N, channels, real_imag, F, frames)
-        spec = mx.reshape(spec, (N, 2, 2, self.n_bins, frames))
+        # spec: (..., 4, n_bins, frames)
+        # Reshape to (..., 2, 2, n_bins, frames) — (..., channels, real_imag, F, frames)
+        spec = mx.reshape(spec, (*batch_dims, 2, 2, self.n_bins, frames))
 
-        # Permute to (N, 2, n_bins, frames, 2) — channels, F, frames, real/imag
-        spec = mx.transpose(spec, (0, 1, 3, 4, 2))
+        # Flatten batch dims for iSTFT.
+        flat = 1
+        for dim in batch_dims:
+            flat *= int(dim)
+        spec = mx.reshape(spec, (flat, 2, 2, self.n_bins, frames))
+        spec = mx.transpose(spec, (0, 1, 3, 4, 2))  # (flat, 2, F, frames, 2)
 
-        # Create complex: (N, 2, n_bins, frames)
+        # Create complex: (flat, 2, n_bins, frames)
         spec_complex = spec[..., 0] + 1j * spec[..., 1]
 
-        # Flatten to (N*2, n_bins, frames) for batch iSTFT
-        spec_flat = mx.reshape(spec_complex, (N * 2, self.n_bins, frames))
+        # Flatten channels for batch iSTFT
+        spec_flat = mx.reshape(spec_complex, (flat * 2, self.n_bins, frames))
 
         # Inverse STFT
         audio = self._transform.istft(spec_flat)
 
-        # Reshape to (N, 2, T)
+        # Reshape to (..., 2, T)
         T = audio.shape[-1]
-        audio = mx.reshape(audio, (N, 2, T))
+        audio = mx.reshape(audio, (*batch_dims, 2, T))
 
         return audio

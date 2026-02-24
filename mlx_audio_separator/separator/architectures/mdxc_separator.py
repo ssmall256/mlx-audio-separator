@@ -32,6 +32,24 @@ class MDXCSeparator(CommonSeparator):
         self.logger.debug(f"MDXC params: override_model_segment_size={self.override_model_segment_size}, pitch_shift={self.pitch_shift}")
 
         self._mlx_window_cache = {}
+        self._np_window_cache = {}
+        self.experimental_vectorized_chunking = bool(
+            self.performance_params.get("experimental_vectorized_chunking", False)
+        )
+        self.experimental_compile_model_forward = bool(
+            self.performance_params.get("experimental_compile_model_forward", False)
+        )
+        self.experimental_compile_shapeless = bool(
+            self.performance_params.get("experimental_compile_shapeless", False)
+        )
+        self.experimental_roformer_static_compiled_demix = bool(
+            self.performance_params.get("experimental_roformer_static_compiled_demix", False)
+        )
+        self._compiled_model_run = None
+        self._fixed_batch_compiled_forward = False
+        self._compiled_demix_fn_cache = {}
+        self._compiled_demix_shapeless_disabled = set()
+        self._logged_static_shapeless_disable = False
 
         # Load model
         self._load_model()
@@ -39,15 +57,167 @@ class MDXCSeparator(CommonSeparator):
         self.logger.info("MDXC Separator initialisation complete")
 
     def _load_model(self):
-        """Load Roformer model using MLX."""
-        from mlx_audio_separator.separator.models.roformer.loader import load_roformer_model
+        """Load MDXC model (Roformer or MDX23C) using MLX."""
+        from mlx_audio_separator.separator.models.mdxc.loader import load_mdxc_model
 
-        self.logger.debug("Loading Roformer model with MLX...")
-        self.model_run, self.model_type = load_roformer_model(
+        self.logger.debug("Loading MDXC model with MLX...")
+        self.model_run, self.model_type = load_mdxc_model(
             model_path=self.model_path,
             config=self.model_data,
         )
+        if self.experimental_compile_model_forward:
+            compile_fn = getattr(mx, "compile", None)
+            if callable(compile_fn):
+                try:
+                    if self.model_type == "mdx23c_tfc_tdf_v3":
+                        compile_kwargs = {"shapeless": False}
+                        if self.experimental_compile_shapeless:
+                            self.logger.info(
+                                "Disabling shapeless compile for MDX23C due CustomKernel shape-inference limitations."
+                            )
+                        self.model_run = compile_fn(self.model_run, **compile_kwargs)
+                        self.logger.info(
+                            "Enabled experimental compiled MDX23C forward path"
+                            f" (shapeless={compile_kwargs['shapeless']})."
+                        )
+                    elif "roformer" in str(self.model_type).lower():
+                        if self.experimental_roformer_static_compiled_demix or self.experimental_compile_shapeless:
+                            self.logger.info(
+                                "Roformer compile paths are disabled by policy; "
+                                "ignoring Roformer static/shapeless compile options."
+                            )
+                        self.experimental_roformer_static_compiled_demix = False
+                        self._compiled_model_run = None
+                        self._fixed_batch_compiled_forward = False
+                    else:
+                        self.logger.info(f"Skipping experimental compiled forward for MDXC model_type={self.model_type}.")
+                except Exception as exc:
+                    self.logger.warning(f"Failed to compile MDXC forward path, continuing uncompiled: {exc}")
+                    self._compiled_model_run = None
+                    self._fixed_batch_compiled_forward = False
+            else:
+                self.logger.warning("MLX compile() unavailable; experimental compiled MDXC forward path disabled.")
         self.logger.info(f"Loaded {self.model_type} model with MLX")
+
+    def _run_fixed_compiled_batch(self, mix_mx, starts, start_idx, current_batch_size, chunk_size, arange_chunk):
+        starts_batch = starts[start_idx : start_idx + current_batch_size]
+        if not starts_batch:
+            return None, []
+        batch_size = max(1, int(self.batch_size))
+        padded_starts = list(starts_batch)
+        if current_batch_size < batch_size:
+            padded_starts.extend([starts_batch[-1]] * (batch_size - current_batch_size))
+
+        starts_mx = mx.array(padded_starts, dtype=mx.int32)
+        gather_idx = starts_mx[:, None] + arange_chunk[None, :]
+        batch = mx.transpose(mix_mx[:, gather_idx], (1, 0, 2))
+
+        if current_batch_size < batch_size:
+            valid_mask = np.zeros((batch_size, 1, 1), dtype=np.float32)
+            valid_mask[:current_batch_size] = 1.0
+            batch = batch * mx.array(valid_mask, dtype=mx.float32)
+
+        x = self._compiled_model_run(batch)
+        if x.ndim == 3:
+            x = mx.expand_dims(x, axis=1)
+        mx.eval(x)
+        return x, starts_batch
+
+    def _run_roformer_static_compiled_demix(
+        self,
+        mix_mx: mx.array,
+        starts: list[int],
+        chunk_size: int,
+        window_mx: mx.array,
+        num_stems: int,
+        shapeless_override: bool | None = None,
+    ) -> np.ndarray:
+        """Run Roformer with a static chunk plan compiled end-to-end."""
+        channels, total_samples = int(mix_mx.shape[0]), int(mix_mx.shape[1])
+        num_chunks = len(starts)
+        if num_chunks <= 0:
+            raise ValueError("Static compiled demix requires at least one chunk.")
+
+        # Guard against pathological memory for very long files in this experimental path.
+        if num_chunks > 256:
+            raise ValueError(f"Static compiled demix disabled for num_chunks={num_chunks} (>256).")
+
+        # Probe output shape once so scatter/index dimensions are fixed for compilation.
+        probe = mx.expand_dims(mix_mx[:, starts[0] : starts[0] + chunk_size], axis=0)
+        probe_out = self.model_run(probe)
+        if probe_out.ndim == 3:
+            probe_out = mx.expand_dims(probe_out, axis=1)
+        mx.eval(probe_out)
+        safe_len = min(int(chunk_size), int(probe_out.shape[-1]), int(window_mx.shape[0]))
+        if safe_len <= 0:
+            raise ValueError("Static compiled demix produced invalid safe_len <= 0.")
+
+        starts_arr = np.asarray(starts, dtype=np.int32)
+        starts_mx = mx.array(starts_arr, dtype=mx.int32)
+        arange_chunk = mx.arange(int(chunk_size), dtype=mx.int32)
+        window_safe = window_mx[:safe_len]
+
+        use_shapeless = bool(self.experimental_compile_shapeless) if shapeless_override is None else bool(shapeless_override)
+
+        plan_shape_key = (
+            int(total_samples),
+            int(num_chunks),
+            int(chunk_size),
+            int(safe_len),
+            int(num_stems),
+            int(channels),
+        )
+        if use_shapeless and plan_shape_key in self._compiled_demix_shapeless_disabled:
+            use_shapeless = False
+
+        plan_key = plan_shape_key + (int(use_shapeless),)
+        compiled_demix = self._compiled_demix_fn_cache.get(plan_key)
+        if compiled_demix is None:
+            compile_fn = getattr(mx, "compile", None)
+            if not callable(compile_fn):
+                raise RuntimeError("MLX compile() unavailable for static compiled demix path.")
+
+            def _demix_fn(mix_in):
+                gather_idx = starts_mx[:, None] + arange_chunk[None, :]
+                batch = mx.transpose(mix_in[:, gather_idx], (1, 0, 2))
+                out = self.model_run(batch)
+                if out.ndim == 3:
+                    out = mx.expand_dims(out, axis=1)
+                out = out[..., :safe_len]
+                weighted = out * window_safe[None, None, None, :]
+
+                result = mx.zeros((num_stems, channels, total_samples), dtype=mx.float32)
+                counter = mx.zeros((total_samples,), dtype=mx.float32)
+                for chunk_idx, write_start in enumerate(starts_arr.tolist()):
+                    write_end = int(write_start) + int(safe_len)
+                    result = result.at[:, :, int(write_start) : write_end].add(weighted[chunk_idx])
+                    counter = counter.at[int(write_start) : write_end].add(window_safe)
+                return result / mx.maximum(counter[None, None, :], mx.array(1e-10, dtype=mx.float32))
+
+            compiled_demix = compile_fn(_demix_fn, shapeless=use_shapeless)
+            self._compiled_demix_fn_cache[plan_key] = compiled_demix
+
+        try:
+            out = compiled_demix(mix_mx)
+            mx.eval(out)
+            return np.array(out, dtype=np.float32, copy=False)
+        except Exception as exc:
+            if use_shapeless:
+                self._compiled_demix_shapeless_disabled.add(plan_shape_key)
+                self._compiled_demix_fn_cache.pop(plan_key, None)
+                self.logger.warning(
+                    "Shapeless static compiled demix failed; retrying with shaped compile: %s",
+                    exc,
+                )
+                return self._run_roformer_static_compiled_demix(
+                    mix_mx=mix_mx,
+                    starts=starts,
+                    chunk_size=chunk_size,
+                    window_mx=window_mx,
+                    num_stems=num_stems,
+                    shapeless_override=False,
+                )
+            raise
 
     def separate(self, audio_file_path, custom_output_names=None):
         """Separate audio file into stems using MDXC/Roformer MLX."""
@@ -133,6 +303,100 @@ class MDXCSeparator(CommonSeparator):
 
         return output_files
 
+    @staticmethod
+    def _chunk_starts(total_samples: int, chunk_size: int, step: int) -> list[int]:
+        max_start = max(int(total_samples) - int(chunk_size), 0)
+        starts = list(range(0, max_start + 1, int(step)))
+        if not starts:
+            return [0]
+        if starts[-1] != max_start:
+            starts.append(max_start)
+        return starts
+
+    def _run_chunked_model_vectorized(
+        self,
+        mix_mx: mx.array,
+        starts: list[int],
+        chunk_size: int,
+        window_mx: mx.array,
+        num_stems: int,
+    ) -> np.ndarray:
+        """Run chunked inference with vectorized gather and batched span overlap-add."""
+        channels, total_samples = int(mix_mx.shape[0]), int(mix_mx.shape[1])
+        batch_size = max(1, int(self.batch_size))
+        arange_chunk = mx.arange(int(chunk_size), dtype=mx.int32)
+        use_fixed_compiled_batch = bool(
+            getattr(self, "_fixed_batch_compiled_forward", False)
+            and getattr(self, "_compiled_model_run", None) is not None
+        )
+
+        result_mx = mx.zeros((num_stems, channels, total_samples), dtype=mx.float32)
+        counter_mx = mx.zeros((total_samples,), dtype=mx.float32)
+
+        eval_flush_interval = max(8, batch_size * 2)
+        pending_updates = 0
+
+        for start_idx in tqdm(range(0, len(starts), batch_size), desc="MLX inference (vectorized)"):
+            current_batch_size = min(batch_size, len(starts) - start_idx)
+            if current_batch_size <= 0:
+                continue
+
+            if use_fixed_compiled_batch:
+                out_mx, starts_batch = self._run_fixed_compiled_batch(
+                    mix_mx=mix_mx,
+                    starts=starts,
+                    start_idx=start_idx,
+                    current_batch_size=current_batch_size,
+                    chunk_size=chunk_size,
+                    arange_chunk=arange_chunk,
+                )
+                if out_mx is None or not starts_batch:
+                    continue
+                out_mx = out_mx[: len(starts_batch)]
+            else:
+                starts_batch = starts[start_idx : start_idx + current_batch_size]
+                if not starts_batch:
+                    continue
+
+                starts_mx = mx.array(starts_batch, dtype=mx.int32)
+                gather_idx = starts_mx[:, None] + arange_chunk[None, :]
+                batch = mx.transpose(mix_mx[:, gather_idx], (1, 0, 2))
+
+                out_mx = self.model_run(batch)
+                if out_mx.ndim == 3:
+                    out_mx = mx.expand_dims(out_mx, axis=1)
+                mx.eval(out_mx)
+
+            safe_len = min(int(chunk_size), int(out_mx.shape[-1]), int(window_mx.shape[0]))
+            if safe_len <= 0:
+                continue
+
+            window_safe = window_mx[:safe_len]
+            weighted = out_mx[..., :safe_len] * window_safe[None, None, None, :]  # (B,S,C,L)
+            span_start = int(starts_batch[0])
+            span_end = int(starts_batch[-1]) + safe_len
+            span_len = span_end - span_start
+
+            span_result = mx.zeros((num_stems, channels, span_len), dtype=mx.float32)
+            span_counter = mx.zeros((span_len,), dtype=mx.float32)
+            for local_idx, write_start in enumerate(starts_batch):
+                rel_start = int(write_start) - span_start
+                span_result = span_result.at[:, :, rel_start : rel_start + safe_len].add(weighted[local_idx])
+                span_counter = span_counter.at[rel_start : rel_start + safe_len].add(window_safe)
+
+            result_mx = result_mx.at[:, :, span_start:span_end].add(span_result)
+            counter_mx = counter_mx.at[span_start:span_end].add(span_counter)
+            pending_updates += 1
+
+            if pending_updates >= eval_flush_interval:
+                mx.eval(result_mx, counter_mx)
+                pending_updates = 0
+
+        mx.eval(result_mx, counter_mx)
+        out = result_mx / mx.maximum(counter_mx[None, None, :], mx.array(1e-10, dtype=mx.float32))
+        mx.eval(out)
+        return np.array(out, dtype=np.float32, copy=False)
+
     def _demix_mlx(self, mix: np.ndarray) -> dict:
         """Demix using MLX-accelerated Roformer inference with chunked overlap-add.
 
@@ -174,21 +438,24 @@ class MDXCSeparator(CommonSeparator):
         step = chunk_size if desired_step <= 0 else min(desired_step, chunk_size)
         step = max(1, int(step))
 
-        # Create Hamming window
-        window = self._mlx_window_cache.get(chunk_size)
-        if window is None:
-            window = mx.array(np.hamming(chunk_size), dtype=mx.float32)
-            self._mlx_window_cache[chunk_size] = window
-
-        # Initialize accumulators
-        req_shape = (num_stems,) + tuple(mix.shape)
-        result = mx.zeros(req_shape, dtype=mx.float32)
-        counter = mx.zeros(req_shape, dtype=mx.float32)
+        # Create Hamming window (both MLX and NumPy for different accumulation paths)
+        window_np = self._np_window_cache.get(chunk_size)
+        window_mx = self._mlx_window_cache.get(chunk_size)
+        if window_np is None or window_mx is None:
+            window_np = np.hamming(chunk_size).astype(np.float32, copy=False)
+            window_mx = mx.array(window_np, dtype=mx.float32)
+            self._np_window_cache[chunk_size] = window_np
+            self._mlx_window_cache[chunk_size] = window_mx
 
         mix_mlx = mx.array(mix, dtype=mx.float32)
         model_run = self.model_run
 
         if mix.shape[1] < chunk_size:
+            # Initialize accumulators
+            req_shape = (num_stems,) + tuple(mix.shape)
+            result = mx.zeros(req_shape, dtype=mx.float32)
+            counter = mx.zeros(req_shape, dtype=mx.float32)
+
             # Short audio: single chunk
             part = mx.expand_dims(mix_mlx, axis=0)
             x = model_run(part)
@@ -196,70 +463,128 @@ class MDXCSeparator(CommonSeparator):
                 x = mx.expand_dims(x, axis=1)
             x = x[0]
             mx.eval(x)
-            safe_len = min(mix.shape[1], x.shape[-1], window.shape[0])
+            safe_len = min(mix.shape[1], x.shape[-1], window_mx.shape[0])
             if safe_len > 0:
-                weighted_chunk = x[..., :safe_len] * window[:safe_len]
+                weighted_chunk = x[..., :safe_len] * window_mx[:safe_len]
                 result = result.at[..., :safe_len].add(weighted_chunk)
-                counter = counter.at[..., :safe_len].add(window[:safe_len])
+                counter = counter.at[..., :safe_len].add(window_mx[:safe_len])
+
+            inferenced_outputs = result / mx.maximum(counter, mx.array(1e-10))
+            inferenced_outputs_np = np.array(inferenced_outputs, dtype=np.float32, copy=False)
+            del result, counter, inferenced_outputs
         else:
             # Chunked processing with overlap-add
-            max_start = max(mix.shape[1] - chunk_size, 0)
-            starts = list(range(0, max_start + 1, step))
-            if not starts:
-                starts = [0]
-            elif starts[-1] != max_start:
-                starts.append(max_start)
+            starts = self._chunk_starts(mix.shape[1], chunk_size, step)
             num_chunks = len(starts)
             self.logger.debug(f"Processing {num_chunks} chunks")
 
-            batch_size = max(1, int(self.batch_size))
-            eval_flush_interval = max(8, batch_size * 2)
-            pending_updates = 0
+            used_static_path = False
+            if (
+                self.experimental_compile_model_forward
+                and self.experimental_roformer_static_compiled_demix
+                and "roformer" in str(self.model_type).lower()
+            ):
+                try:
+                    self.logger.info("Using experimental Roformer static-plan compiled demix path.")
+                    if self.experimental_compile_shapeless and not self._logged_static_shapeless_disable:
+                        self.logger.info(
+                            "Roformer static demix forcing shaped compile "
+                            "(experimental_compile_shapeless ignored for this path)."
+                        )
+                        self._logged_static_shapeless_disable = True
+                    inferenced_outputs_np = self._run_roformer_static_compiled_demix(
+                        mix_mx=mix_mlx,
+                        starts=starts,
+                        chunk_size=chunk_size,
+                        window_mx=window_mx,
+                        num_stems=num_stems,
+                        shapeless_override=False,
+                    )
+                    used_static_path = True
+                except Exception as exc:
+                    self.logger.warning(
+                        "Experimental Roformer static compiled demix failed; "
+                        "falling back to standard chunk loop: %s",
+                        exc,
+                    )
 
-            def maybe_eval(force=False):
-                nonlocal pending_updates, result, counter
-                if force or pending_updates >= eval_flush_interval:
-                    mx.eval(result, counter)
-                    pending_updates = 0
+            if not used_static_path and self.experimental_vectorized_chunking:
+                self.logger.info("Using experimental vectorized MDXC chunking path.")
+                inferenced_outputs_np = self._run_chunked_model_vectorized(
+                    mix_mx=mix_mlx,
+                    starts=starts,
+                    chunk_size=chunk_size,
+                    window_mx=window_mx,
+                    num_stems=num_stems,
+                )
+            elif not used_static_path:
+                # Initialize accumulators
+                req_shape = (num_stems,) + tuple(mix.shape)
+                result = mx.zeros(req_shape, dtype=mx.float32)
+                counter = mx.zeros(req_shape, dtype=mx.float32)
 
-            def run_batch(start_idx: int, current_batch_size: int):
-                nonlocal result, counter, pending_updates
-                parts_batch = [
-                    mix_mlx[:, starts[start_idx + local_idx] : starts[start_idx + local_idx] + chunk_size]
-                    for local_idx in range(current_batch_size)
-                ]
-                batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
-                x = model_run(batch)
-                if x.ndim == 3:
-                    x = mx.expand_dims(x, axis=1)
-                mx.eval(x)
+                batch_size = max(1, int(self.batch_size))
+                eval_flush_interval = max(8, batch_size * 2)
+                pending_updates = 0
+                arange_chunk = mx.arange(int(chunk_size), dtype=mx.int32)
 
-                for batch_idx in range(current_batch_size):
-                    write_start = starts[start_idx + batch_idx]
-                    out = x[batch_idx]
-                    safe_len = min(chunk_size, out.shape[-1], window.shape[0])
-                    if safe_len > 0:
-                        weighted_chunk = out[..., :safe_len] * window[:safe_len]
-                        result = result.at[..., write_start : write_start + safe_len].add(weighted_chunk)
-                        counter = counter.at[..., write_start : write_start + safe_len].add(window[:safe_len])
-                        pending_updates += 1
+                def maybe_eval(force=False):
+                    nonlocal pending_updates, result, counter
+                    if force or pending_updates >= eval_flush_interval:
+                        mx.eval(result, counter)
+                        pending_updates = 0
 
-                maybe_eval()
+                def run_batch(start_idx: int, current_batch_size: int):
+                    nonlocal result, counter, pending_updates
+                    if current_batch_size <= 0:
+                        return
 
-            num_full_batches, tail_size = divmod(num_chunks, batch_size)
-            total_batches = num_full_batches + (1 if tail_size else 0)
-            for batch_id in tqdm(range(total_batches), desc="MLX inference"):
-                start_idx = batch_id * batch_size
-                current_batch_size = batch_size if batch_id < num_full_batches else tail_size
-                run_batch(start_idx, current_batch_size)
+                    if self._fixed_batch_compiled_forward and self._compiled_model_run is not None:
+                        x, starts_batch = self._run_fixed_compiled_batch(
+                            mix_mx=mix_mlx,
+                            starts=starts,
+                            start_idx=start_idx,
+                            current_batch_size=current_batch_size,
+                            chunk_size=chunk_size,
+                            arange_chunk=arange_chunk,
+                        )
+                    else:
+                        starts_batch = starts[start_idx : start_idx + current_batch_size]
+                        parts_batch = [
+                            mix_mlx[:, write_start : write_start + chunk_size]
+                            for write_start in starts_batch
+                        ]
+                        batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
+                        x = model_run(batch)
+                        if x.ndim == 3:
+                            x = mx.expand_dims(x, axis=1)
+                        mx.eval(x)
 
-            maybe_eval(force=True)
+                    for batch_idx, write_start in enumerate(starts_batch):
+                        out = x[batch_idx]
+                        safe_len = min(chunk_size, out.shape[-1], window_mx.shape[0])
+                        if safe_len > 0:
+                            weighted_chunk = out[..., :safe_len] * window_mx[:safe_len]
+                            result = result.at[..., write_start : write_start + safe_len].add(weighted_chunk)
+                            counter = counter.at[..., write_start : write_start + safe_len].add(window_mx[:safe_len])
+                            pending_updates += 1
 
-        # Normalize by overlap counter
-        inferenced_outputs = result / mx.maximum(counter, mx.array(1e-10))
-        inferenced_outputs_np = np.array(inferenced_outputs)
+                    maybe_eval()
 
-        del result, counter, inferenced_outputs, mix_mlx
+                num_full_batches, tail_size = divmod(num_chunks, batch_size)
+                total_batches = num_full_batches + (1 if tail_size else 0)
+                for batch_id in tqdm(range(total_batches), desc="MLX inference"):
+                    start_idx = batch_id * batch_size
+                    current_batch_size = batch_size if batch_id < num_full_batches else tail_size
+                    run_batch(start_idx, current_batch_size)
+
+                maybe_eval(force=True)
+
+                inferenced_outputs = result / mx.maximum(counter, mx.array(1e-10))
+                inferenced_outputs_np = np.array(inferenced_outputs, dtype=np.float32, copy=False)
+                del result, counter, inferenced_outputs
+
+        del mix_mlx
         gc.collect()
 
         # Build output dictionary

@@ -18,6 +18,8 @@ MLX-native music stem separation for Apple Silicon (macOS), with no PyTorch or O
 - Reproducibility and release evidence checklist: `docs/reproducibility.md`
 - Release-first execution playbook: `docs/release-first.md`
 - Wave 4 opt-in performance roadmap: `docs/wave4-opt-in.md`
+- Release notes: `docs/release-notes-0.1.1.md`
+- Changelog: `CHANGELOG.md`
 - Third-party attribution and license notices: `THIRD_PARTY_NOTICES.md`
 
 ## Installation
@@ -83,14 +85,21 @@ mlx-audio-separator song.mp3 \
 
 Available flags:
 
-- `--speed_mode {default,latency_safe}`
 - `--speed_mode {default,latency_safe,latency_safe_v2}`
 - `--auto_tune_batch`
 - `--tune_probe_seconds <seconds>`
 - `--cache_clear_policy {aggressive,deferred}`
 - `--write_workers <int>`
+- `--experimental_vectorized_chunking`
+- `--experimental_compile_model_forward`
+- `--experimental_compile_shapeless`
+- `--experimental_roformer_static_compiled_demix`
 - `--perf_trace`
 - `--perf_trace_path <path>`
+
+`--experimental_vectorized_chunking` currently enables an MDXC-only experimental chunk scheduler path.
+`--experimental_compile_model_forward` currently provides a real acceleration path for MDX23C checkpoints.
+Roformer compile paths (shapeless and static compiled demix) are currently disabled by policy; those flags are accepted for compatibility but ignored at runtime.
 
 Current `latency_safe` preset recommendations:
 

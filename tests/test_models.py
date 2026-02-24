@@ -43,6 +43,34 @@ class TestConvTDFNet:
         assert out.shape == (1, 4, 2048, 256)
 
 
+class TestTfcTdfV3MLX:
+    def test_forward_shape_multi_target(self, mdx23c_small_config):
+        from mlx_audio_separator.separator.models.mdxc.tfc_tdf_v3_mlx import TfcTdfV3MLX
+
+        model = TfcTdfV3MLX(mdx23c_small_config)
+        x = mx.zeros((1, 2, 4096))
+        out = model(x)
+        mx.eval(out)
+        assert out.shape[0] == 1
+        assert out.shape[1] == 2
+        assert out.shape[2] == 2
+        assert abs(out.shape[3] - 4096) < 256
+
+    def test_forward_shape_single_target(self, mdx23c_small_config):
+        from mlx_audio_separator.separator.models.mdxc.tfc_tdf_v3_mlx import TfcTdfV3MLX
+
+        cfg = dict(mdx23c_small_config)
+        cfg["training"] = dict(mdx23c_small_config["training"])
+        cfg["training"]["target_instrument"] = "Vocals"
+        model = TfcTdfV3MLX(cfg)
+        x = mx.zeros((1, 2, 4096))
+        out = model(x)
+        mx.eval(out)
+        assert out.shape[0] == 1
+        assert out.shape[1] == 2
+        assert abs(out.shape[2] - 4096) < 256
+
+
 class TestCascadedASPPNet:
     def test_forward_shape_31191(self):
         from mlx_audio_separator.separator.models.vr.nets import determine_model_capacity

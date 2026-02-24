@@ -20,6 +20,10 @@ DEFAULT_PERFORMANCE_PARAMS = {
     "tune_probe_seconds": 8.0,
     "cache_clear_policy": "aggressive",
     "write_workers": 1,
+    "experimental_vectorized_chunking": False,
+    "experimental_compile_model_forward": False,
+    "experimental_compile_shapeless": False,
+    "experimental_roformer_static_compiled_demix": False,
     "perf_trace": False,
     "perf_trace_path": None,
 }
@@ -41,6 +45,10 @@ def normalize_performance_params(params: dict[str, Any] | None) -> dict[str, Any
 
     out["auto_tune_batch"] = bool(out["auto_tune_batch"])
     out["perf_trace"] = bool(out["perf_trace"])
+    out["experimental_vectorized_chunking"] = bool(out["experimental_vectorized_chunking"])
+    out["experimental_compile_model_forward"] = bool(out["experimental_compile_model_forward"])
+    out["experimental_compile_shapeless"] = bool(out["experimental_compile_shapeless"])
+    out["experimental_roformer_static_compiled_demix"] = bool(out["experimental_roformer_static_compiled_demix"])
 
     out["tune_probe_seconds"] = float(out["tune_probe_seconds"])
     if out["tune_probe_seconds"] <= 0:

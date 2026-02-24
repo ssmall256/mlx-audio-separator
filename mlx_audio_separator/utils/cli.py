@@ -82,6 +82,26 @@ def main():
     common_params.add_argument("--tune_probe_seconds", type=float, default=8.0, help="Probe duration for auto-tuner (default: %(default)s).")
     common_params.add_argument("--cache_clear_policy", choices=["aggressive", "deferred"], default="aggressive", help="Cache clear policy (default: %(default)s).")
     common_params.add_argument("--write_workers", type=int, default=1, help="Concurrent stem writer workers (default: %(default)s).")
+    common_params.add_argument(
+        "--experimental_vectorized_chunking",
+        action="store_true",
+        help="Enable experimental vectorized chunking path (currently MDXC only).",
+    )
+    common_params.add_argument(
+        "--experimental_compile_model_forward",
+        action="store_true",
+        help="Enable experimental compiled forward pass for model inference (currently MDX23C path in MDXC).",
+    )
+    common_params.add_argument(
+        "--experimental_compile_shapeless",
+        action="store_true",
+        help="Enable experimental shapeless compilation mode where available (currently ignored for Roformer by policy).",
+    )
+    common_params.add_argument(
+        "--experimental_roformer_static_compiled_demix",
+        action="store_true",
+        help="Compatibility flag; Roformer static compiled demix path is currently disabled by policy.",
+    )
     common_params.add_argument("--perf_trace", action="store_true", help="Write per-file performance trace metrics.")
     common_params.add_argument("--perf_trace_path", default=None, help="JSONL path for performance trace output.")
 
@@ -248,6 +268,10 @@ def main():
             "tune_probe_seconds": args.tune_probe_seconds,
             "cache_clear_policy": args.cache_clear_policy,
             "write_workers": args.write_workers,
+            "experimental_vectorized_chunking": args.experimental_vectorized_chunking,
+            "experimental_compile_model_forward": args.experimental_compile_model_forward,
+            "experimental_compile_shapeless": args.experimental_compile_shapeless,
+            "experimental_roformer_static_compiled_demix": args.experimental_roformer_static_compiled_demix,
             "perf_trace": args.perf_trace,
             "perf_trace_path": args.perf_trace_path,
         },

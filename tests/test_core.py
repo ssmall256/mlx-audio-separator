@@ -87,3 +87,48 @@ class TestSeparatorInit:
             log_level=logging.DEBUG,
         )
         assert sep.log_level == logging.DEBUG
+
+
+class _DummyModel:
+    def clear_gpu_cache(self):
+        pass
+
+
+class TestSeparatorStrictErrors:
+    def test_default_mode_swallows_file_exceptions(self, tmp_path, monkeypatch):
+        audio = tmp_path / "in.wav"
+        audio.write_bytes(b"RIFF")
+
+        sep = Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+        sep.model_instance = _DummyModel()
+        sep.model_type = "MDX"
+
+        calls = {"clear": 0}
+
+        def raise_in_separate_file(path, custom_output_names=None):
+            raise RuntimeError("inner failure")
+
+        monkeypatch.setattr(sep, "_separate_file", raise_in_separate_file)
+        monkeypatch.setattr(sep, "_clear_cache_now", lambda: calls.__setitem__("clear", calls["clear"] + 1))
+
+        output = sep.separate(str(audio))
+        assert output == []
+        assert calls["clear"] == 1
+
+    def test_strict_mode_reraises_file_exceptions(self, tmp_path, monkeypatch):
+        audio = tmp_path / "in.wav"
+        audio.write_bytes(b"RIFF")
+
+        sep = Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+        sep.model_instance = _DummyModel()
+        sep.model_type = "MDX"
+        sep._set_strict_separation_errors(True)
+
+        def raise_in_separate_file(path, custom_output_names=None):
+            raise RuntimeError("inner failure")
+
+        monkeypatch.setattr(sep, "_separate_file", raise_in_separate_file)
+        monkeypatch.setattr(sep, "_clear_cache_now", lambda: None)
+
+        with pytest.raises(RuntimeError, match="inner failure"):
+            sep.separate(str(audio))

@@ -238,8 +238,7 @@ class CommonSeparator:
         stem_source = normalize(wave=stem_source, max_peak=self.normalization_threshold, min_peak=self.amplification_threshold)
 
         if np.max(np.abs(stem_source)) < 1e-6:
-            self.logger.warning("Warning: stem_source array is near-silent or empty.")
-            return
+            self.logger.warning("stem_source array is near-silent; writing silent stem to preserve output contract.")
 
         if self.output_dir:
             os.makedirs(self.output_dir, exist_ok=True)

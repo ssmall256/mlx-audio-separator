@@ -21,6 +21,9 @@ from .nets_new import CascadedNet
 
 logger = logging.getLogger(__name__)
 
+LEGACY_ASPP_SEPARABLE = "legacy_aspp_separable"
+NEW_CASCADED_ASPP_PLAIN = "new_cascaded_aspp_plain"
+
 
 class ModelParameters:
     """Load VR model parameters from JSON config file."""
@@ -123,6 +126,8 @@ def convert_torch_to_mlx_weights(model_path):
         )
 
     state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+    mapping_profile = _detect_mapping_profile(state_dict)
+    logger.info(f"Using VR weight mapping profile: {mapping_profile}")
     mlx_weights = {}
 
     # First pass: collect all weights with converted keys
@@ -130,7 +135,7 @@ def convert_torch_to_mlx_weights(model_path):
 
     for key, value in state_dict.items():
         arr = value.numpy()
-        mlx_key = _convert_key(key)
+        mlx_key = _convert_key(key, mapping_profile=mapping_profile)
 
         # Skip num_batches_tracked (not used in MLX BatchNorm)
         if mlx_key is None:
@@ -172,7 +177,15 @@ def _is_conv_weight(key, arr):
     return arr.ndim == 4 and "weight" in key
 
 
-def _convert_key(key):
+def _detect_mapping_profile(state_dict):
+    """Detect which VR key mapping profile should be used for this checkpoint."""
+    keys = state_dict.keys()
+    if any(key.startswith(("stg1_low_band_net.0.", "stg2_low_band_net.0.")) for key in keys):
+        return NEW_CASCADED_ASPP_PLAIN
+    return LEGACY_ASPP_SEPARABLE
+
+
+def _convert_key(key, mapping_profile=LEGACY_ASPP_SEPARABLE):
     """Convert PyTorch state dict key to MLX module path.
 
     PyTorch Sequential containers use numeric indices (conv.0.weight, conv.1.weight).
@@ -183,7 +196,9 @@ def _convert_key(key):
     - CascadedNet stg*_low_band_net Sequential: .0. → _base., .1. → _proj.
     - ASPP bottleneck Sequential: bottleneck.0.* → bottleneck_conv.*
     - ASPP conv1 Sequential: conv1.1.conv.N → conv1_proj.conv/bn (skip AdaptiveAvgPool)
-    - ASPP separable conv blocks: conv3/4/5.conv.[0|1|2] → dw_conv/pw_conv/bn
+    - ASPP conv block mapping profile:
+      - legacy_aspp_separable: conv3/4/5/6/7.conv.[0|1|2] → dw_conv/pw_conv/bn
+      - new_cascaded_aspp_plain: conv3/4/5.conv.[0|1] → conv/bn
     - Decoder naming drift: dec*.conv.conv.N → dec*.conv1.conv/bn
     - LSTM bidirectional weight mappings
 
@@ -253,26 +268,38 @@ def _convert_key(key):
 
         # Handle Conv2DBNActiv/Separable Sequential: conv.N → concrete submodule
         # Conv2DBNActiv: conv.0 = Conv2d, conv.1 = BatchNorm
-        # ASPP separable blocks: conv3/conv4/conv5 use conv.0=dw, conv.1=pw, conv.2=bn
+        # ASPP separable blocks (legacy): conv3/4/5/6/7 use conv.0=dw, conv.1=pw, conv.2=bn
+        # ASPP plain blocks (new cascaded): conv3/4/5 use conv.0=conv, conv.1=bn
         if part == "conv" and i + 1 < len(parts) and parts[i + 1].isdigit():
             idx = int(parts[i + 1])
-            in_aspp_sep = (
+            in_aspp_block = (
                 len(new_parts) >= 2
                 and new_parts[-2] == "aspp"
-                and new_parts[-1] in {"conv3", "conv4", "conv5"}
+                and new_parts[-1] in {"conv3", "conv4", "conv5", "conv6", "conv7"}
             )
-            if in_aspp_sep:
-                if idx == 0:
-                    new_parts.append("dw_conv")
-                elif idx == 1:
-                    new_parts.append("pw_conv")
-                elif idx == 2:
-                    new_parts.append("bn")
-                else:
+            if in_aspp_block:
+                if mapping_profile == LEGACY_ASPP_SEPARABLE:
+                    if idx == 0:
+                        new_parts.append("dw_conv")
+                    elif idx == 1:
+                        new_parts.append("pw_conv")
+                    elif idx == 2:
+                        new_parts.append("bn")
+                    else:
+                        i += 2
+                        continue
                     i += 2
                     continue
-                i += 2
-                continue
+                if mapping_profile == NEW_CASCADED_ASPP_PLAIN:
+                    if idx == 0:
+                        new_parts.append("conv")
+                    elif idx in (1, 2):
+                        new_parts.append("bn")
+                    else:
+                        i += 2
+                        continue
+                    i += 2
+                    continue
 
             if idx == 0:
                 new_parts.append("conv")

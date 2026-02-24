@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import mlx_audio_io as mac
 import numpy as np
-import soundfile as sf
 
 from mlx_audio_separator.core import Separator
 
@@ -56,7 +56,10 @@ def read_stem_map(output_paths: list[str]) -> dict[str, tuple[np.ndarray, int]]:
     """Read stem files into memory keyed by normalized stem name."""
     out: dict[str, tuple[np.ndarray, int]] = {}
     for path in output_paths:
-        audio, sample_rate = sf.read(path, always_2d=True)
+        audio_mx, sample_rate = mac.load(str(path), dtype="float32")
+        audio = np.array(audio_mx, copy=False)
+        if audio.ndim == 1:
+            audio = audio[:, np.newaxis]
         out[stem_key(path)] = (audio, int(sample_rate))
     return out
 

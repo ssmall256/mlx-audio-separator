@@ -17,6 +17,10 @@ class TestPerformanceParams:
         assert perf["tune_probe_seconds"] == 8.0
         assert perf["cache_clear_policy"] == "aggressive"
         assert perf["write_workers"] == 1
+        assert perf["experimental_vectorized_chunking"] is False
+        assert perf["experimental_compile_model_forward"] is False
+        assert perf["experimental_compile_shapeless"] is False
+        assert perf["experimental_roformer_static_compiled_demix"] is False
         assert perf["perf_trace"] is False
         assert perf["perf_trace_path"] is None
 
@@ -100,6 +104,10 @@ def test_cli_performance_params_propagation(monkeypatch, tmp_path):
             "deferred",
             "--write_workers",
             "2",
+            "--experimental_vectorized_chunking",
+            "--experimental_compile_model_forward",
+            "--experimental_compile_shapeless",
+            "--experimental_roformer_static_compiled_demix",
             "--perf_trace",
             "--perf_trace_path",
             str(tmp_path / "perf.jsonl"),
@@ -115,6 +123,10 @@ def test_cli_performance_params_propagation(monkeypatch, tmp_path):
     assert perf["tune_probe_seconds"] == 6.5
     assert perf["cache_clear_policy"] == "deferred"
     assert perf["write_workers"] == 2
+    assert perf["experimental_vectorized_chunking"] is True
+    assert perf["experimental_compile_model_forward"] is True
+    assert perf["experimental_compile_shapeless"] is True
+    assert perf["experimental_roformer_static_compiled_demix"] is True
     assert perf["perf_trace"] is True
     assert str(perf["perf_trace_path"]).endswith("perf.jsonl")
 

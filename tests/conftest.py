@@ -93,3 +93,31 @@ def convtdfnet_config():
         "bias": True,
         "optimizer": "rmsprop",
     }
+
+
+@pytest.fixture
+def mdx23c_small_config():
+    return {
+        "audio": {
+            "dim_f": 64,
+            "hop_length": 32,
+            "n_fft": 128,
+            "num_channels": 2,
+            "sample_rate": 44100,
+        },
+        "model": {
+            "act": "gelu",
+            "bottleneck_factor": 2,
+            "growth": 4,
+            "norm": "InstanceNorm",
+            "num_blocks_per_scale": 1,
+            "num_channels": 8,
+            "num_scales": 2,
+            "num_subbands": 2,
+            "scale": [2, 2],
+        },
+        "training": {
+            "instruments": ["Vocals", "Instrumental"],
+            "target_instrument": None,
+        },
+    }

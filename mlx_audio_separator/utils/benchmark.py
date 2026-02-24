@@ -1,6 +1,7 @@
 """Benchmark runner for all supported models."""
 
 import gc
+import importlib.util
 import json
 import os
 import platform
@@ -11,6 +12,11 @@ from datetime import datetime, timezone
 from statistics import median
 
 from mlx_audio_separator.utils.performance import clear_mlx_cache
+
+_CORRUPT_MODEL_ERROR_SNIPPETS = (
+    "PytorchStreamReader failed reading zip archive",
+    "failed finding central directory",
+)
 
 
 def _print_summary_table(results):
@@ -122,6 +128,41 @@ def _save_results(output_path, data):
     os.replace(tmp_path, output_path)
 
 
+def _looks_like_corrupt_model_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(snippet in message for snippet in _CORRUPT_MODEL_ERROR_SNIPPETS)
+
+
+def _cleanup_output_files(output_files):
+    for output_file in output_files:
+        try:
+            os.remove(output_file)
+        except OSError:
+            pass
+
+
+def _validate_output_files(output_files):
+    missing_files = [path for path in output_files if not os.path.isfile(path)]
+    empty_files = [path for path in output_files if os.path.isfile(path) and os.path.getsize(path) <= 0]
+    return {
+        "stems_nonzero": len(output_files) > 0,
+        "outputs_exist": len(missing_files) == 0,
+        "outputs_nonempty": len(empty_files) == 0,
+        "missing_files": missing_files,
+        "empty_files": empty_files,
+    }
+
+
+def _demucs_conversion_dependency_available() -> bool:
+    return importlib.util.find_spec("demucs") is not None
+
+
+def _enable_strict_benchmark_diagnostics(separator) -> None:
+    setter = getattr(separator, "_set_strict_separation_errors", None)
+    if callable(setter):
+        setter(True)
+
+
 def run_benchmark(
     audio_file,
     output_dir=None,
@@ -196,9 +237,38 @@ def run_benchmark(
 
     # Build work list
     work_list = [(fn, info) for fn, info in model_list.items() if fn not in completed_filenames]
-    total = len(work_list) + len(completed_filenames)
 
-    if not work_list:
+    # Preflight Demucs conversion dependency; skip Demucs models if missing.
+    preflight_skipped = []
+    if any(info["Type"] == "Demucs" for _, info in work_list) and not _demucs_conversion_dependency_available():
+        demucs_reason = (
+            "skipped: missing demucs conversion dependency "
+            "(install with: pip install 'demucs-mlx[convert]')"
+        )
+        non_demucs = []
+        for filename, info in work_list:
+            if info["Type"] == "Demucs":
+                preflight_skipped.append({
+                    "filename": filename,
+                    "friendly_name": info["Name"],
+                    "arch": info["Type"],
+                    "load_time": 0.0,
+                    "separate_time": 0.0,
+                    "separate_runs": [],
+                    "stems": 0,
+                    "status": demucs_reason,
+                })
+            else:
+                non_demucs.append((filename, info))
+        work_list = non_demucs
+        print(
+            f"Demucs preflight: dependency 'demucs' unavailable; "
+            f"skipping {len(preflight_skipped)} Demucs model(s)."
+        )
+
+    total = len(work_list) + len(completed_filenames) + len(preflight_skipped)
+
+    if not work_list and not preflight_skipped:
         print("No models to benchmark.")
         if existing_results:
             _print_summary_table(existing_results)
@@ -224,10 +294,17 @@ def run_benchmark(
             "os": f"{platform.system()} {platform.release()}",
             "python": platform.python_version(),
         },
-        "results": list(existing_results),
+        "results": list(existing_results) + preflight_skipped,
     }
 
     all_results = results_data["results"]
+
+    if not work_list:
+        print("No runnable models after preflight checks.")
+        _save_results(results_path, results_data)
+        print(f"\nResults saved to: {results_path}")
+        _print_summary_table(all_results)
+        return
 
     # Signal handler for Ctrl+C — print summary and exit
     def handle_interrupt(signum, frame):
@@ -239,7 +316,7 @@ def run_benchmark(
     signal.signal(signal.SIGINT, handle_interrupt)
 
     for i, (filename, info) in enumerate(work_list, start=1):
-        offset = len(completed_filenames)
+        offset = len(completed_filenames) + len(preflight_skipped)
         print(f"[{offset + i}/{total}] {filename} ({info['Type']})...", end=" ", flush=True)
 
         result = {
@@ -265,37 +342,73 @@ def run_benchmark(
                 sep_kwargs["log_formatter"] = log_formatter
 
             sep = Separator(**sep_kwargs)
+            _enable_strict_benchmark_diagnostics(sep)
+            retry = {"attempted": False, "reason": None, "deleted_model_file": False}
 
             # Load model
             t0 = time.perf_counter()
-            sep.load_model(model_filename=filename)
+            try:
+                sep.load_model(model_filename=filename)
+            except Exception as e:
+                if not _looks_like_corrupt_model_error(e):
+                    raise
+                retry["attempted"] = True
+                retry["reason"] = str(e)
+                result["retry"] = dict(retry)
+                model_path = os.path.join(model_file_dir, filename)
+                if os.path.isfile(model_path):
+                    os.remove(model_path)
+                    retry["deleted_model_file"] = True
+                safetensors_path = os.path.join(
+                    model_file_dir,
+                    f"{os.path.splitext(filename)[0]}.safetensors",
+                )
+                if os.path.isfile(safetensors_path):
+                    os.remove(safetensors_path)
+                sep = Separator(**sep_kwargs)
+                _enable_strict_benchmark_diagnostics(sep)
+                sep.load_model(model_filename=filename)
             load_time = time.perf_counter() - t0
+            if retry["attempted"]:
+                result["retry"] = dict(retry)
 
             # Warmup runs (untimed)
             for _ in range(warmup):
-                output_files = sep.separate(audio_file)
-                for f in output_files:
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+                output_files = []
+                try:
+                    output_files = sep.separate(audio_file)
+                finally:
+                    _cleanup_output_files(output_files)
 
             # Timed runs
             run_times = []
             stems = 0
             perf_samples = []
-            for _ in range(repeats):
-                t0 = time.perf_counter()
-                output_files = sep.separate(audio_file)
-                run_times.append(time.perf_counter() - t0)
-                stems = len(output_files)
-                if profile and sep.last_perf_metrics:
-                    perf_samples.append(dict(sep.last_perf_metrics))
-                for f in output_files:
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+            last_validation = None
+            for repeat_idx in range(repeats):
+                output_files = []
+                try:
+                    t0 = time.perf_counter()
+                    output_files = sep.separate(audio_file)
+                    run_times.append(time.perf_counter() - t0)
+                    stems = len(output_files)
+                    last_validation = _validate_output_files(output_files)
+                    if not (
+                        last_validation["stems_nonzero"]
+                        and last_validation["outputs_exist"]
+                        and last_validation["outputs_nonempty"]
+                    ):
+                        result["validation"] = last_validation
+                        raise RuntimeError(
+                            f"invalid output files on repeat {repeat_idx + 1}/{repeats}: "
+                            f"stems={stems}, missing={len(last_validation['missing_files'])}, "
+                            f"empty={len(last_validation['empty_files'])}"
+                        )
+                    last_perf = getattr(sep, "last_perf_metrics", None)
+                    if profile and last_perf:
+                        perf_samples.append(dict(last_perf))
+                finally:
+                    _cleanup_output_files(output_files)
 
             separate_time = median(run_times)
 
@@ -303,6 +416,8 @@ def run_benchmark(
             result["separate_time"] = round(separate_time, 2)
             result["separate_runs"] = [round(x, 3) for x in run_times]
             result["stems"] = stems
+            if last_validation is not None:
+                result["validation"] = last_validation
             if perf_samples:
                 result["profile_samples"] = perf_samples
             result["status"] = "ok"
@@ -311,6 +426,10 @@ def run_benchmark(
 
         except Exception as e:
             result["status"] = f"error: {e}"
+            result["diagnostic"] = {
+                "exception_type": type(e).__name__,
+                "message": str(e),
+            }
             print(f"FAILED: {e}")
 
         all_results.append(result)

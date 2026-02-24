@@ -25,6 +25,8 @@ MDX_DEFAULT_PARAMS = {
     "optimizer": "rmsprop",
 }
 
+_NUMERIC_MAPPING_DISABLED_BASENAMES = {"uvr-mdx-net-voc_ft.onnx"}
+
 
 def create_mdx_model(model_data: Dict[str, Any]) -> ConvTDFNet:
     """Create a ConvTDFNet model from model data parameters.
@@ -117,17 +119,45 @@ def _infer_params_from_onnx(
 
     params = {}
 
-    if numeric:
-        # Sort numeric weights by ID
+    # Infer g/dim_c from first plausible first_conv-like 1x1 kernel.
+    for _, weight in onnx_weights.items():
+        if (
+            weight.ndim == 4
+            and weight.shape[2] == 1
+            and weight.shape[3] == 1
+            and int(weight.shape[1]) <= 8
+            and int(weight.shape[0]) > int(weight.shape[1])
+        ):
+            params["g"] = int(weight.shape[0])
+            params["dim_c"] = int(weight.shape[1])
+            logger.info(
+                "Inferred g=%s, dim_c=%s from 1x1 conv shape %s",
+                params["g"],
+                params["dim_c"],
+                tuple(weight.shape),
+            )
+            break
+
+    if "g" not in params and numeric:
         numeric.sort(key=lambda x: x[0])
+        for _, weight in numeric:
+            if (
+                weight.ndim == 4
+                and weight.shape[2] == 1
+                and weight.shape[3] == 1
+                and int(weight.shape[1]) <= 8
+            ):
+                params["g"] = int(weight.shape[0])
+                params["dim_c"] = int(weight.shape[1])
+                logger.info(
+                    "Inferred g=%s, dim_c=%s from numeric 1x1 conv shape %s",
+                    params["g"],
+                    params["dim_c"],
+                    tuple(weight.shape),
+                )
+                break
 
-        # First numeric weight is first_conv: shape (g, dim_c, 1, 1)
-        first_weight = numeric[0][1]
-        params["g"] = int(first_weight.shape[0])
-        params["dim_c"] = int(first_weight.shape[1])
-        logger.info(f"Inferred g={params['g']} from first_conv weight shape")
-
-    # Infer num_blocks from encoding_blocks indices
+    # Infer num_blocks from encoding_blocks indices.
     max_enc_idx = -1
     for name in named:
         m = re.match(r"encoding_blocks\.(\d+)\.", name)
@@ -136,17 +166,44 @@ def _infer_params_from_onnx(
     if max_enc_idx >= 0:
         n = max_enc_idx + 1
         params["num_blocks"] = 2 * n + 1
-        logger.info(
-            f"Inferred num_blocks={params['num_blocks']} "
-            f"from {n} encoding blocks"
-        )
+        logger.info("Inferred num_blocks=%s from %s encoding blocks", params["num_blocks"], n)
 
-    # Infer bn from TDF linear weight shapes
-    # encoding_blocks.0.tdf.0.weight has shape (f//bn, f) or a numeric
-    # weight has shape (dim_f, dim_f//bn)
+    # Alternate naming profile (kuielab family): ds_dense / is_dense / mid_dense.
+    if "num_blocks" not in params:
+        max_ds_dense_idx = -1
+        for name in named:
+            m = re.match(r"ds_dense\.(\d+)\.", name)
+            if m:
+                max_ds_dense_idx = max(max_ds_dense_idx, int(m.group(1)))
+        if max_ds_dense_idx >= 0:
+            n = max_ds_dense_idx + 1
+            params["num_blocks"] = 2 * n + 1
+            logger.info("Inferred num_blocks=%s from ds_dense depth n=%s", params["num_blocks"], n)
+
+    # Last-resort depth estimate from max conv width and inferred g.
+    if "num_blocks" not in params and "g" in params:
+        g = int(params["g"])
+        max_channel = 0
+        for weight in onnx_weights.values():
+            if weight.ndim == 4:
+                max_channel = max(max_channel, int(weight.shape[0]), int(weight.shape[1]))
+        if max_channel > 0 and max_channel % g == 0:
+            n_est = (max_channel // g) - 1
+            if 1 <= n_est <= 12:
+                params["num_blocks"] = 2 * n_est + 1
+                logger.info(
+                    "Inferred num_blocks=%s from max conv channels=%s and g=%s",
+                    params["num_blocks"],
+                    max_channel,
+                    g,
+                )
+
+    # Infer bn from TDF linear weight shapes.
     for name, weight in named.items():
-        if re.match(r"encoding_blocks\.0\.tdf\.0\.", name) and weight.ndim == 2:
-            # TDF linear1: (f, f//bn) or (f//bn, f) depending on export
+        if (
+            re.match(r"encoding_blocks\.0\.tdf\.0\.", name)
+            or re.match(r"ds_dense\.0\.tdf\.0\.", name)
+        ) and weight.ndim == 2:
             if weight.shape[0] == dim_f:
                 params["bn"] = dim_f // weight.shape[1]
             elif weight.shape[1] == dim_f:
@@ -155,43 +212,29 @@ def _infer_params_from_onnx(
             break
 
     if "bn" not in params and numeric:
-        # Try to find TDF linear shapes in numeric weights (2D tensors)
         for _, weight in numeric:
             if weight.ndim == 2 and dim_f in weight.shape:
-                other_dim = (
-                    weight.shape[1]
-                    if weight.shape[0] == dim_f
-                    else weight.shape[0]
-                )
+                other_dim = weight.shape[1] if weight.shape[0] == dim_f else weight.shape[0]
                 if dim_f % other_dim == 0 and other_dim < dim_f:
                     params["bn"] = dim_f // other_dim
-                    logger.info(
-                        f"Inferred bn={params['bn']} from numeric TDF linear"
-                    )
+                    logger.info(f"Inferred bn={params['bn']} from numeric TDF linear")
                     break
 
-    # Infer num_tdf_layers (l) from TFC conv count per block
+    # Infer num_tdf_layers (l) from numeric path if present.
     if numeric and "g" in params:
-        g = params["g"]
-        # After first_conv (weight+bias), the first encoder block has
-        # l TFC conv layers (each with weight+bias), then a ds conv.
-        # Count 4D weights with shape (g, g, *, *) before the ds conv.
+        g = int(params["g"])
         tfc_count = 0
-        for i in range(len(numeric)):
-            _, w = numeric[i]
-            if w.ndim != 4:
+        for _, weight in numeric:
+            if weight.ndim != 4:
                 continue
-            # Skip first_conv
-            if w.shape[1] != g or w.shape[0] != g:
+            if weight.shape[1] != g or weight.shape[0] != g:
                 if tfc_count > 0:
                     break
                 continue
             tfc_count += 1
         if tfc_count > 0:
             params["l"] = tfc_count
-            logger.info(
-                f"Inferred l={params['l']} TFC layers from weight shapes"
-            )
+            logger.info(f"Inferred l={params['l']} TFC layers from weight shapes")
 
     return params
 
@@ -203,6 +246,7 @@ def convert_onnx_to_mlx_weights(
     num_tdf_layers: int,
     dim_f: int,
     bn: int,
+    include_numeric: bool = True,
 ) -> Dict[str, mx.array]:
     """Convert ONNX weights to MLX format.
 
@@ -240,8 +284,22 @@ def convert_onnx_to_mlx_weights(
 
         mlx_weights[mlx_name] = mx.array(weight)
 
+    used_conv_profile = False
+    if not _has_structured_named_weights(named):
+        conv_sequence = _extract_conv_profile_sequence(named)
+        if conv_sequence:
+            # Conv_* exports keep convolution kernels in unnamed buckets and
+            # often keep TDF linears in numeric IDs.
+            linear_numeric = sorted(
+                [(idx, weight) for idx, weight in numeric if weight.ndim == 2],
+                key=lambda x: x[0],
+            )
+            positional = conv_sequence + linear_numeric
+            _map_numeric_weights(positional, mlx_weights, g, n, num_tdf_layers, dim_f, bn)
+            used_conv_profile = True
+
     # Process numeric weights positionally
-    if numeric:
+    if include_numeric and numeric and not used_conv_profile:
         numeric.sort(key=lambda x: x[0])
         _map_numeric_weights(
             numeric, mlx_weights, g, n, num_tdf_layers, dim_f, bn,
@@ -284,9 +342,20 @@ def _map_numeric_weights(
 
     def add_conv(prefix, weight):
         """Add a conv weight (transposed) and its bias."""
-        mlx_weights[f"{prefix}.weight"] = mx.array(
-            np.transpose(weight, (0, 2, 3, 1))
-        )
+        if weight.ndim != 4:
+            raise ValueError(
+                f"MDX numeric mapping expected 4D conv tensor for '{prefix}', "
+                f"got shape {weight.shape}."
+            )
+        try:
+            transposed = np.transpose(weight, (0, 2, 3, 1))
+        except ValueError as exc:
+            raise ValueError(
+                f"MDX numeric mapping transpose failed for '{prefix}' "
+                f"with shape {weight.shape}; this ONNX layout is unsupported "
+                "by positional mapping."
+            ) from exc
+        mlx_weights[f"{prefix}.weight"] = mx.array(transposed)
         bias = take()
         if bias is not None:
             mlx_weights[f"{prefix}.bias"] = mx.array(bias)
@@ -581,6 +650,14 @@ def load_mdx_model(
 
         n = params["num_blocks"] // 2
 
+        include_numeric = _should_include_numeric_mapping(model_path)
+        if not include_numeric:
+            logger.info(
+                "Numeric positional mapping disabled for model %s; "
+                "using named/Conv-profile conversion only.",
+                os.path.basename(model_path),
+            )
+
         mlx_weights = convert_onnx_to_mlx_weights(
             onnx_weights,
             g=params["g"],
@@ -588,7 +665,13 @@ def load_mdx_model(
             num_tdf_layers=params["l"],
             dim_f=dim_f,
             bn=params["bn"],
+            include_numeric=include_numeric,
         )
+        if not mlx_weights:
+            raise ValueError(
+                "Unsupported MDX ONNX weight schema: no compatible weights were mapped "
+                f"for {os.path.basename(model_path)}."
+            )
         model.load_weights(list(mlx_weights.items()), strict=False)
 
         # Optionally save safetensors for future use
@@ -618,3 +701,46 @@ def _override_mdx_params_from_weights(
                 model_data["g"] = g
                 logger.info(f"Inferred g={g} from safetensors")
             break
+
+
+def _should_include_numeric_mapping(model_path: str) -> bool:
+    base = os.path.basename(model_path).lower()
+    return base not in _NUMERIC_MAPPING_DISABLED_BASENAMES
+
+
+def _has_structured_named_weights(named_weights: Dict[str, np.ndarray]) -> bool:
+    prefixes = (
+        "first_conv.",
+        "encoding_blocks.",
+        "decoding_blocks.",
+        "bottleneck_block.",
+        "ds.",
+        "us.",
+    )
+    return any(name.startswith(prefixes) for name in named_weights)
+
+
+def _extract_conv_profile_sequence(named_weights: Dict[str, np.ndarray]) -> List[Tuple[int, np.ndarray]]:
+    """Build positional Conv_* sequence for ONNX exports with unnamed kernels."""
+    grouped: Dict[int, Dict[str, np.ndarray]] = {}
+    for name, weight in named_weights.items():
+        m = re.match(r"Conv_(\d+)\.(weight|bias)$", name)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        grouped.setdefault(idx, {})[m.group(2)] = weight
+
+    if not grouped:
+        return []
+
+    ordered: List[Tuple[int, np.ndarray]] = []
+    flat_idx = 0
+    for conv_idx in sorted(grouped):
+        pair = grouped[conv_idx]
+        if "weight" in pair:
+            ordered.append((flat_idx, pair["weight"]))
+            flat_idx += 1
+        if "bias" in pair:
+            ordered.append((flat_idx, pair["bias"]))
+            flat_idx += 1
+    return ordered

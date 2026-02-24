@@ -3,6 +3,6 @@ try:
 
     __version__ = version("mlx-audio-separator")
 except Exception:
-    __version__ = "0.1.0-dev"
+    __version__ = "0.1.1-dev"
 
 from .core import Separator  # noqa: F401
