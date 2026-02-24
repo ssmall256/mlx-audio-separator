@@ -32,8 +32,8 @@ def normalize_performance_params(params: dict[str, Any] | None) -> dict[str, Any
         out.update(params)
 
     out["speed_mode"] = str(out["speed_mode"]).strip().lower()
-    if out["speed_mode"] not in {"default", "latency_safe"}:
-        raise ValueError("performance_params.speed_mode must be one of: default, latency_safe")
+    if out["speed_mode"] not in {"default", "latency_safe", "latency_safe_v2"}:
+        raise ValueError("performance_params.speed_mode must be one of: default, latency_safe, latency_safe_v2")
 
     out["cache_clear_policy"] = str(out["cache_clear_policy"]).strip().lower()
     if out["cache_clear_policy"] not in {"aggressive", "deferred"}:

@@ -61,7 +61,7 @@ class Separator:
         pitch_shift: 0
 
     Performance Parameters (opt-in):
-        speed_mode: "default" | "latency_safe"
+        speed_mode: "default" | "latency_safe" | "latency_safe_v2"
         auto_tune_batch: False
         tune_probe_seconds: 8.0
         cache_clear_policy: "aggressive" | "deferred"
@@ -171,6 +171,7 @@ class Separator:
             if chunk_duration <= 0:
                 raise ValueError("chunk_duration must be greater than 0")
         self.performance_params = normalize_performance_params(performance_params)
+        self._strict_separation_errors = False
 
         if demucs_params is None:
             demucs_params = {
@@ -217,6 +218,10 @@ class Separator:
         if not info_only:
             self._check_mlx_available()
 
+    def _set_strict_separation_errors(self, enabled: bool):
+        """Internal-only toggle used by benchmark diagnostics."""
+        self._strict_separation_errors = bool(enabled)
+
     def _check_mlx_available(self):
         """Verify MLX is available on this system."""
         try:
@@ -241,14 +246,31 @@ class Separator:
 
     def _apply_speed_mode_overrides(self):
         speed_mode = self.performance_params["speed_mode"]
-        if speed_mode != "latency_safe":
+        if speed_mode == "default":
             return
-        self.logger.info("Applying latency_safe speed-mode presets.")
-        # Keep strict output-equivalence behavior for latency_safe mode.
-        self.arch_specific_params["Demucs"]["batch_size"] = 8
-        self.arch_specific_params["MDXC"]["batch_size"] = 1
-        self.arch_specific_params["MDX"]["batch_size"] = 1
-        self.arch_specific_params["VR"]["batch_size"] = 1
+
+        profiles = {
+            "latency_safe": {
+                "Demucs": 8,
+                "MDXC": 1,
+                "MDX": 1,
+                "VR": 1,
+            },
+            "latency_safe_v2": {
+                # Wave 4 experimental presets (opt-in only).
+                "Demucs": 12,
+                "MDXC": 1,
+                "MDX": 1,
+                "VR": 2,
+            },
+        }
+        selected = profiles.get(speed_mode)
+        if selected is None:
+            return
+
+        self.logger.info(f"Applying {speed_mode} speed-mode presets.")
+        for arch, batch_size in selected.items():
+            self.arch_specific_params[arch]["batch_size"] = int(batch_size)
 
     def _build_tuning_key(self, arch: str, model_name: str, sr: int, channels: int):
         device = "unknown"
@@ -792,6 +814,8 @@ class Separator:
                             except Exception as e:
                                 self.logger.error(f"Failed to process file {full_path}: {e}")
                                 self._clear_cache_now()
+                                if self._strict_separation_errors:
+                                    raise
             else:
                 self.logger.info(f"Processing file: {path}")
                 try:
@@ -800,6 +824,8 @@ class Separator:
                 except Exception as e:
                     self.logger.error(f"Failed to process file {path}: {e}")
                     self._clear_cache_now()
+                    if self._strict_separation_errors:
+                        raise
 
         self._finalize_deferred_cache()
         return output_files

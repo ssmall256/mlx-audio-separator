@@ -72,7 +72,12 @@ def main():
     common_params.add_argument("--sample_rate", type=int, default=44100, help="Sample rate (default: %(default)s).")
     common_params.add_argument("--chunk_duration", type=float, default=None, help="Split audio into chunks of this duration in seconds.")
     common_params.add_argument("--custom_output_names", type=json.loads, default=None, help='Custom output names in JSON format.')
-    common_params.add_argument("--speed_mode", choices=["default", "latency_safe"], default="default", help="Performance speed profile (default: %(default)s).")
+    common_params.add_argument(
+        "--speed_mode",
+        choices=["default", "latency_safe", "latency_safe_v2"],
+        default="default",
+        help="Performance speed profile (default: %(default)s).",
+    )
     common_params.add_argument("--auto_tune_batch", action="store_true", help="Auto-tune batch size for the current model/audio.")
     common_params.add_argument("--tune_probe_seconds", type=float, default=8.0, help="Probe duration for auto-tuner (default: %(default)s).")
     common_params.add_argument("--cache_clear_policy", choices=["aggressive", "deferred"], default="aggressive", help="Cache clear policy (default: %(default)s).")

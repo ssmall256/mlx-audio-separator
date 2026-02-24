@@ -84,6 +84,7 @@ mlx-audio-separator song.mp3 \
 Available flags:
 
 - `--speed_mode {default,latency_safe}`
+- `--speed_mode {default,latency_safe,latency_safe_v2}`
 - `--auto_tune_batch`
 - `--tune_probe_seconds <seconds>`
 - `--cache_clear_policy {aggressive,deferred}`
@@ -97,6 +98,13 @@ Current `latency_safe` preset recommendations:
 - `MDXC`: `batch_size=1`
 - `MDX`: `batch_size=1`
 - `VR`: `batch_size=1`
+
+Wave 4 opt-in experimental profile `latency_safe_v2`:
+
+- `Demucs`: `batch_size=12`
+- `MDXC`: `batch_size=1`
+- `MDX`: `batch_size=1`
+- `VR`: `batch_size=2`
 
 Deterministic equivalence checks default to strict pass/fail gating for `MDXC`, `MDX`, and `VR`. `Demucs` strict gating remains opt-in; deterministic Demucs mode still keeps fused `GroupNorm+GELU` while enforcing deterministic evaluation controls.
 

@@ -31,6 +31,17 @@ class TestPerformanceParams:
         assert sep.arch_specific_params["MDX"]["batch_size"] == 1
         assert sep.arch_specific_params["VR"]["batch_size"] == 1
 
+    def test_latency_safe_v2_batch_overrides(self, tmp_path):
+        sep = Separator(
+            info_only=True,
+            model_file_dir=str(tmp_path / "models"),
+            performance_params={"speed_mode": "latency_safe_v2"},
+        )
+        assert sep.arch_specific_params["Demucs"]["batch_size"] == 12
+        assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
+        assert sep.arch_specific_params["MDX"]["batch_size"] == 1
+        assert sep.arch_specific_params["VR"]["batch_size"] == 2
+
     def test_invalid_speed_mode(self):
         with pytest.raises(ValueError, match="speed_mode"):
             normalize_performance_params({"speed_mode": "fastest"})
@@ -106,3 +117,34 @@ def test_cli_performance_params_propagation(monkeypatch, tmp_path):
     assert perf["write_workers"] == 2
     assert perf["perf_trace"] is True
     assert str(perf["perf_trace_path"]).endswith("perf.jsonl")
+
+
+def test_cli_accepts_latency_safe_v2(monkeypatch, tmp_path):
+    import mlx_audio_separator.utils.cli as cli
+
+    input_wav = tmp_path / "in.wav"
+    input_wav.write_bytes(b"fake")
+    captured = {}
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def load_model(self, model_filename):
+            captured["model_filename"] = model_filename
+
+        def separate(self, audio_files, custom_output_names=None):
+            return []
+
+    monkeypatch.setattr("mlx_audio_separator.core.Separator", FakeSeparator)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mlx-audio-separator",
+            str(input_wav),
+            "--speed_mode",
+            "latency_safe_v2",
+        ],
+    )
+    cli.main()
+    assert captured["performance_params"]["speed_mode"] == "latency_safe_v2"
