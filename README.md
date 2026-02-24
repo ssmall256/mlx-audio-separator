@@ -16,6 +16,8 @@ MLX-native music stem separation for Apple Silicon (macOS), with no PyTorch or O
 ## Documentation Map
 
 - Reproducibility and release evidence checklist: `docs/reproducibility.md`
+- Release-first execution playbook: `docs/release-first.md`
+- Wave 4 opt-in performance roadmap: `docs/wave4-opt-in.md`
 - Third-party attribution and license notices: `THIRD_PARTY_NOTICES.md`
 
 ## Installation
