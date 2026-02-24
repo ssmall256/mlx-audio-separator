@@ -76,8 +76,31 @@ def _filter_kwargs_for_ctor(ctor: Any, kwargs: dict[str, Any]) -> dict[str, Any]
         return dict(kwargs)
 
 
+def _normalize_output_paths(paths: list[str] | None, output_dir: str | Path | None) -> list[str]:
+    out: list[str] = []
+    base_dir = Path(output_dir).expanduser().resolve() if output_dir else None
+    cwd = Path.cwd().resolve()
+    for raw in paths or []:
+        p = Path(str(raw))
+        candidates: list[Path] = []
+        if p.is_absolute():
+            candidates.append(p)
+        else:
+            candidates.append((cwd / p).resolve())
+            if base_dir is not None:
+                candidates.append((base_dir / p).resolve())
+                candidates.append((base_dir / p.name).resolve())
+        chosen = None
+        for c in candidates:
+            if c.exists():
+                chosen = c
+                break
+        out.append(str((chosen or candidates[0]) if candidates else p))
+    return out
+
+
 def _cleanup_outputs(paths: list[str] | None):
-    for p in paths or []:
+    for p in _normalize_output_paths(paths, output_dir=None):
         try:
             if os.path.isfile(p):
                 os.remove(p)
@@ -85,16 +108,17 @@ def _cleanup_outputs(paths: list[str] | None):
             pass
 
 
-def _validate_outputs(paths: list[str] | None) -> tuple[bool, str | None]:
+def _validate_outputs(paths: list[str] | None, output_dir: str | Path | None) -> tuple[bool, str | None, list[str]]:
+    resolved = _normalize_output_paths(paths, output_dir=output_dir)
     if not paths:
-        return False, "no output files returned"
-    missing = [p for p in paths if not os.path.isfile(p)]
+        return False, "no output files returned", resolved
+    missing = [p for p in resolved if not os.path.isfile(p)]
     if missing:
-        return False, f"missing output files: {len(missing)}"
-    empty = [p for p in paths if os.path.getsize(p) <= 0]
+        return False, f"missing output files: {len(missing)}", resolved
+    empty = [p for p in resolved if os.path.getsize(p) <= 0]
     if empty:
-        return False, f"empty output files: {len(empty)}"
-    return True, None
+        return False, f"empty output files: {len(empty)}", resolved
+    return True, None, resolved
 
 
 def _build_leg_sequence(order_template: str, order_repeats: int, randomize_abba: bool, rng: random.Random) -> list[str]:
@@ -239,7 +263,8 @@ def run_model(
                 _, sep = backends[leg]
                 for _ in range(int(max(0, warmup))):
                     outs = sep.separate(audio_path)
-                    _cleanup_outputs(outs)
+                    _, _, resolved = _validate_outputs(outs, output_dir=(mlx_out if leg == "A" else pas_out))
+                    _cleanup_outputs(resolved)
 
             leg_sequence = _build_leg_sequence(
                 order_template=order_template,
@@ -252,8 +277,8 @@ def run_model(
                 t0 = time.perf_counter()
                 outs = sep.separate(audio_path)
                 dt = time.perf_counter() - t0
-                ok, reason = _validate_outputs(outs)
-                _cleanup_outputs(outs)
+                ok, reason, resolved = _validate_outputs(outs, output_dir=(mlx_out if backend_name == "mlx" else pas_out))
+                _cleanup_outputs(resolved)
                 if not ok:
                     raise RuntimeError(f"{backend_name} invalid outputs: {reason}")
                 if backend_name == "mlx":
@@ -400,4 +425,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
