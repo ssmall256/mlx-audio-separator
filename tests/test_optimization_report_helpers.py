@@ -93,3 +93,51 @@ def test_collect_repro_metadata_includes_manifests(tmp_path: Path):
     assert meta["corpus_manifest"][0]["path"] == str(corpus_file)
     assert meta["model_manifest"][0]["exists"] is True
     assert meta["model_manifest"][1]["exists"] is False
+
+
+def test_run_python_mps_parity_fail_fast_summary(monkeypatch, tmp_path: Path):
+    rpt = _load_report_module()
+
+    def fake_run_model(**kwargs):
+        model = kwargs["model"]
+        if model == "good.onnx":
+            return {
+                "model": model,
+                "status": "ok",
+                "pass": True,
+                "arch_mlx": "MDX",
+                "files_checked": 1,
+                "files_passed": 1,
+                "max_rel_l2": 0.0,
+            }
+        return {
+            "model": model,
+            "status": "error: boom",
+            "pass": False,
+            "arch_mlx": "MDX",
+            "files_checked": 0,
+            "files_passed": 0,
+            "max_rel_l2": 1.0,
+        }
+
+    monkeypatch.setattr(rpt, "run_python_mps_parity_model", fake_run_model)
+    payload = rpt.run_python_mps_parity(
+        corpus=["/tmp/f.wav"],
+        models=["good.onnx", "bad.onnx", "skipped.onnx"],
+        output_root=tmp_path,
+        model_file_dir="/tmp/models",
+        mlx_separator_kwargs={"output_format": "WAV"},
+        pas_separator_kwargs={"output_format": "WAV"},
+        threshold_rel_l2=1e-5,
+        seed=12345,
+        demucs_shifts_zero=True,
+        max_files=1,
+        fail_fast=True,
+    )
+
+    assert payload["status"] == "ok"
+    assert payload["all_pass"] is False
+    assert payload["summary"]["terminated_early"] is True
+    assert payload["summary"]["total_models"] == 2
+    assert payload["summary"]["ok_models"] == 1
+    assert payload["summary"]["failed_models"] == 1

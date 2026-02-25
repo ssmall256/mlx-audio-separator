@@ -31,6 +31,7 @@ from compare_latency import (
 )
 from mlx_audio_separator.core import Separator
 from mlx_audio_separator.utils.equivalence import read_stem_map, run_equivalence_suite
+from mlx_vs_pas_parity import run_model as run_python_mps_parity_model
 
 
 def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -235,6 +236,73 @@ def run_python_mps_latency(
         results[model] = row
 
     return {"status": "ok", "results": results}
+
+
+def run_python_mps_parity(
+    *,
+    corpus: list[str],
+    models: list[str],
+    output_root: Path,
+    model_file_dir: str | None,
+    mlx_separator_kwargs: dict[str, Any],
+    pas_separator_kwargs: dict[str, Any] | None,
+    threshold_rel_l2: float,
+    seed: int,
+    demucs_shifts_zero: bool,
+    max_files: int,
+    fail_fast: bool,
+) -> dict[str, Any]:
+    eval_corpus = list(corpus if int(max_files) <= 0 else corpus[: int(max_files)])
+    rows: list[dict[str, Any]] = []
+    terminated_early = False
+    stop_reason = None
+
+    for model in models:
+        row = run_python_mps_parity_model(
+            model=model,
+            corpus=eval_corpus,
+            model_file_dir=model_file_dir,
+            mlx_kwargs=dict(mlx_separator_kwargs),
+            pas_kwargs=dict(pas_separator_kwargs or {}),
+            threshold_rel_l2=float(threshold_rel_l2),
+            seed=int(seed),
+            demucs_shifts_zero=bool(demucs_shifts_zero),
+            output_root=output_root,
+        )
+        rows.append(row)
+        if bool(fail_fast) and row.get("status") != "ok":
+            terminated_early = True
+            stop_reason = f"{model}: {row.get('status')}"
+            break
+
+    ok_rows = [r for r in rows if r.get("status") == "ok"]
+    summary = {
+        "total_models": len(rows),
+        "ok_models": len(ok_rows),
+        "failed_models": len(rows) - len(ok_rows),
+        "pass_models": sum(1 for r in rows if bool(r.get("pass"))),
+        "terminated_early": bool(terminated_early),
+        "stop_reason": stop_reason,
+        "threshold_rel_l2": float(threshold_rel_l2),
+        "seed": int(seed),
+        "demucs_shifts_zero": bool(demucs_shifts_zero),
+        "fail_fast": bool(fail_fast),
+        "max_files": int(max_files),
+    }
+
+    all_pass = (
+        len(rows) == len(models)
+        and all(r.get("status") == "ok" and bool(r.get("pass")) for r in rows)
+    )
+
+    return {
+        "status": "ok",
+        "corpus": eval_corpus,
+        "models": models,
+        "results": rows,
+        "summary": summary,
+        "all_pass": bool(all_pass),
+    }
 
 
 def _safe_percentile(values: list[float], q: float) -> float:
@@ -647,6 +715,32 @@ def _write_markdown(path: Path, payload: dict[str, Any]):
                     f"{'n/a' if delta is None else f'{delta:+.2f}%'} |"
                 )
 
+    py_parity = payload.get("python_mps_parity")
+    if isinstance(py_parity, dict):
+        lines.extend(["", "## Python MPS Parity", ""])
+        rows = py_parity.get("results", [])
+        summary = py_parity.get("summary", {})
+        lines.extend(
+            [
+                f"- Relative L2 threshold: `{summary.get('threshold_rel_l2')}`",
+                f"- Fail-fast: `{summary.get('fail_fast')}`",
+                f"- Max files: `{summary.get('max_files')}`",
+                f"- Terminated early: `{summary.get('terminated_early')}`",
+                f"- Stop reason: `{summary.get('stop_reason') or 'n/a'}`",
+                "",
+                "| Model | Arch | Files checked | Max rel L2 | Pass | Status |",
+                "|---|---:|---:|---:|---:|---|",
+            ]
+        )
+        for row in rows:
+            max_rel = row.get("max_rel_l2")
+            lines.append(
+                f"| `{row.get('model')}` | {row.get('arch_mlx') or 'unknown'} | "
+                f"{row.get('files_checked', 0)} | "
+                f"{'n/a' if max_rel is None else f'{max_rel:.8f}'} | "
+                f"{'yes' if row.get('pass') else 'no'} | {row.get('status')} |"
+            )
+
     repro = payload.get("reproducibility", {})
     if isinstance(repro, dict):
         git = repro.get("git", {})
@@ -800,6 +894,42 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Timed repeats for python MPS baseline (default: use candidate repeats).",
     )
+    parser.add_argument(
+        "--python-mps-parity",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include optional MLX-vs-python deterministic parity checks.",
+    )
+    parser.add_argument(
+        "--python-mps-parity-max-files",
+        type=int,
+        default=1,
+        help="Number of corpus files for python MPS parity checks (0=all).",
+    )
+    parser.add_argument(
+        "--python-mps-parity-threshold-rel-l2",
+        type=float,
+        default=1e-5,
+        help="Relative L2 threshold for python MPS parity checks.",
+    )
+    parser.add_argument(
+        "--python-mps-parity-seed",
+        type=int,
+        default=12345,
+        help="Deterministic seed for python MPS parity checks.",
+    )
+    parser.add_argument(
+        "--python-mps-parity-demucs-shifts-zero",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Force Demucs shifts=0 in python MPS parity checks (default: true).",
+    )
+    parser.add_argument(
+        "--python-mps-parity-fail-fast",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stop python MPS parity checks after first model failure (default: true).",
+    )
     return parser.parse_args()
 
 
@@ -898,6 +1028,7 @@ def main():
         quality_pass = bool(quality_payload.get("all_pass", False))
 
         python_mps_payload: dict[str, Any] | None = None
+        python_mps_parity_payload: dict[str, Any] | None = None
         if bool(args.python_mps_latency):
             py_results = run_python_mps_latency(
                 corpus=corpus,
@@ -934,6 +1065,21 @@ def main():
                     )
             python_mps_payload = dict(py_results)
             python_mps_payload["summary"] = summary if py_results.get("status") == "ok" else []
+
+        if bool(args.python_mps_parity):
+            python_mps_parity_payload = run_python_mps_parity(
+                corpus=corpus,
+                models=models,
+                output_root=run_temp / "python_mps_parity",
+                model_file_dir=effective_model_file_dir,
+                mlx_separator_kwargs=candidate_cfg.separator_kwargs,
+                pas_separator_kwargs=python_mps_kwargs,
+                threshold_rel_l2=float(args.python_mps_parity_threshold_rel_l2),
+                seed=int(args.python_mps_parity_seed),
+                demucs_shifts_zero=bool(args.python_mps_parity_demucs_shifts_zero),
+                max_files=int(args.python_mps_parity_max_files),
+                fail_fast=bool(args.python_mps_parity_fail_fast),
+            )
     finally:
         if not args.keep_temp:
             _cleanup_dir(run_temp)
@@ -941,6 +1087,10 @@ def main():
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_json = Path(args.output_json) if args.output_json else Path(f"/Users/sam/Code/mlx-audio-separator/perf_reports/optimization_report_{now}.json")
     output_md = Path(args.output_markdown) if args.output_markdown else output_json.with_suffix(".md")
+
+    python_mps_parity_pass = True
+    if bool(args.python_mps_parity):
+        python_mps_parity_pass = bool((python_mps_parity_payload or {}).get("all_pass", False))
 
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -960,11 +1110,13 @@ def main():
         "parity": parity_payload,
         "quality": quality_payload,
         "python_mps_latency": python_mps_payload if bool(args.python_mps_latency) else None,
-        "overall_pass": bool(latency_pass and parity_pass and quality_pass),
+        "python_mps_parity": python_mps_parity_payload if bool(args.python_mps_parity) else None,
+        "overall_pass": bool(latency_pass and parity_pass and quality_pass and python_mps_parity_pass),
         "gate_results": {
             "latency_pass": bool(latency_pass),
             "parity_pass": bool(parity_pass),
             "quality_pass": bool(quality_pass),
+            "python_mps_parity_pass": bool(python_mps_parity_pass),
         },
     }
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -975,7 +1127,8 @@ def main():
         "Optimization gates: "
         f"latency={'pass' if latency_pass else 'fail'}, "
         f"parity={'pass' if parity_pass else 'fail'}, "
-        f"quality={'pass' if quality_pass else 'fail'}"
+        f"quality={'pass' if quality_pass else 'fail'}, "
+        f"python_mps_parity={'pass' if python_mps_parity_pass else 'fail'}"
     )
     if bool(args.python_mps_latency):
         status = payload.get("python_mps_latency", {}).get("status")

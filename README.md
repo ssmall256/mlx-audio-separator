@@ -157,6 +157,7 @@ Optional report flags:
 - `--quality-reference-manifest /path/to/reference_manifest.json`
 - `--parity-strict-demucs`
 - `--python-mps-latency`
+- `--python-mps-parity`
 
 Reference manifest scaffold helper:
 
