@@ -78,6 +78,21 @@ uv run python scripts/perf/mlx_vs_pas_abba.py \
   --output-markdown /tmp/mlx_vs_pas_abba.md
 ```
 
+Run MLX vs `audio-separator` parity smoke (fail-fast):
+
+```bash
+printf '%s\n' /path/to/one/mix.wav > /tmp/corpus_one.txt
+uv run python scripts/perf/mlx_vs_pas_parity.py \
+  --corpus-file /tmp/corpus_one.txt \
+  --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
+  --model-file-dir /tmp/audio-separator-models \
+  --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
+  --pas-config '{"output_format":"WAV"}' \
+  --threshold-rel-l2 3e-2 \
+  --fail-fast \
+  --output-json /tmp/mlx_vs_pas_parity_smoke.json
+```
+
 ## Go / No-Go
 
 Go only if all are true:
@@ -85,7 +100,8 @@ Go only if all are true:
 1. `uv run pytest -q` passes.
 2. Release readiness gate script exits `0`.
 3. Optimization report contains no architecture-level regressions you consider release blockers.
-4. MLX vs PAS ABBA report provides the release comparison evidence you want to publish.
+4. MLX vs PAS ABBA report provides the release comparison performance evidence.
+5. MLX vs PAS parity smoke (or report parity section) passes with documented tolerance policy.
 
 No-Go if any are false. Fix and re-run from benchmark stage.
 

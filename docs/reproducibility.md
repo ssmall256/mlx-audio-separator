@@ -58,15 +58,24 @@ python scripts/perf/run_optimization_report.py \
   --parity-strict-demucs \
   --parity-max-files 0 \
   --python-mps-latency \
+  --python-mps-parity \
+  --python-mps-parity-max-files 0 \
+  --python-mps-parity-threshold-rel-l2 3e-2 \
   --output-json /path/to/optimization_report.json \
   --output-markdown /path/to/optimization_report.md
 ```
 
+Parity tolerance policy:
+
+- MLX-vs-MLX deterministic parity: strict `relative L2 <= 1e-5`.
+- MLX-vs-`audio-separator` parity: `relative L2 <= 3e-2` for cross-runtime comparisons.
+- Demucs MLX parity runs should use strict Demucs kernel parity settings (enabled by default in `mlx_vs_pas_parity.py`).
+
 ## Recommended Evaluation Sizes
 
-- Minimum publishable claim: `20-25` songs.
-- Strong reviewer confidence: `~50` songs.
-- High-confidence release claim: `60-70` songs, including out-of-domain tracks.
+- Initial release evidence (practical): `~12` songs with diversified genres/instrumentation.
+- Strong reviewer confidence: `20-25` songs.
+- Extended stress evidence (optional): `~50` songs.
 
 ## Reviewer Packet Checklist
 

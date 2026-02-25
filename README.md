@@ -152,6 +152,25 @@ python scripts/perf/mlx_vs_pas_abba.py \
   --pas-config '{"output_format":"WAV"}'
 ```
 
+MLX vs `audio-separator` parity check (fail-fast, one command):
+
+```bash
+python scripts/perf/mlx_vs_pas_parity.py \
+  --corpus-file /path/to/corpus.txt \
+  --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
+  --model-file-dir /tmp/audio-separator-models \
+  --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
+  --pas-config '{"output_format":"WAV"}' \
+  --threshold-rel-l2 3e-2 \
+  --fail-fast
+```
+
+Parity interpretation:
+
+- MLX internal deterministic parity (same backend/config): use strict threshold `1e-5`.
+- MLX vs `audio-separator` (cross-runtime parity): use threshold `3e-2`.
+- Demucs cross-backend parity runs with strict MLX Demucs kernel settings by default in parity tooling.
+
 Optional report flags:
 
 - `--quality-reference-manifest /path/to/reference_manifest.json`
