@@ -131,6 +131,7 @@ def test_run_python_mps_parity_fail_fast_summary(monkeypatch, tmp_path: Path):
         threshold_rel_l2=1e-5,
         seed=12345,
         demucs_shifts_zero=True,
+        demucs_mlx_strict_kernels=True,
         max_files=1,
         fail_fast=True,
     )

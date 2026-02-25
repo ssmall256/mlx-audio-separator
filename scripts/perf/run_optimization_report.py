@@ -249,6 +249,7 @@ def run_python_mps_parity(
     threshold_rel_l2: float,
     seed: int,
     demucs_shifts_zero: bool,
+    demucs_mlx_strict_kernels: bool,
     max_files: int,
     fail_fast: bool,
 ) -> dict[str, Any]:
@@ -267,6 +268,7 @@ def run_python_mps_parity(
             threshold_rel_l2=float(threshold_rel_l2),
             seed=int(seed),
             demucs_shifts_zero=bool(demucs_shifts_zero),
+            demucs_mlx_strict_kernels=bool(demucs_mlx_strict_kernels),
             output_root=output_root,
         )
         rows.append(row)
@@ -286,6 +288,7 @@ def run_python_mps_parity(
         "threshold_rel_l2": float(threshold_rel_l2),
         "seed": int(seed),
         "demucs_shifts_zero": bool(demucs_shifts_zero),
+        "demucs_mlx_strict_kernels": bool(demucs_mlx_strict_kernels),
         "fail_fast": bool(fail_fast),
         "max_files": int(max_files),
     }
@@ -1077,6 +1080,7 @@ def main():
                 threshold_rel_l2=float(args.python_mps_parity_threshold_rel_l2),
                 seed=int(args.python_mps_parity_seed),
                 demucs_shifts_zero=bool(args.python_mps_parity_demucs_shifts_zero),
+                demucs_mlx_strict_kernels=True,
                 max_files=int(args.python_mps_parity_max_files),
                 fail_fast=bool(args.python_mps_parity_fail_fast),
             )

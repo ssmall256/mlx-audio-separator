@@ -49,3 +49,29 @@ def test_build_summary_includes_termination_flags():
     assert summary["pass_models"] == 1
     assert summary["terminated_early"] is True
     assert summary["stop_reason"] == "model: error"
+
+
+def test_demucs_strict_mlx_env_sets_and_restores(monkeypatch):
+    mod = _load_module()
+
+    for key in (
+        "MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED",
+        "MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED",
+        "MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP",
+        "MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    with mod._demucs_strict_mlx_env(enabled=True):
+        assert mod.os.environ["MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED"] == "1"
+        assert mod.os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED"] == "0"
+        assert mod.os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP"] == "0"
+        assert mod.os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL"] == "1"
+
+    for key in (
+        "MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED",
+        "MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED",
+        "MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP",
+        "MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL",
+    ):
+        assert key not in mod.os.environ

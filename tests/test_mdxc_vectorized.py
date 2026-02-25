@@ -248,3 +248,34 @@ def test_demix_static_path_forces_shaped_compile(monkeypatch):
     assert out.shape == (2, mix.shape[1])
     assert captured.get("shapeless_override") is False
 
+
+def test_separate_writes_complementary_secondary_for_single_target_model():
+    sep = mdxc_mod.MDXCSeparator.__new__(mdxc_mod.MDXCSeparator)
+    sep.logger = _NoopLogger()
+    sep.sample_rate = 44100
+    sep.normalization_threshold = 0.9
+    sep.amplification_threshold = 0.0
+    sep.output_single_stem = None
+    sep.output_dir = "/tmp"
+    sep.override_model_segment_size = False
+    sep.model_data = {"training": {"target_instrument": "Vocals", "instruments": []}}
+    sep.primary_stem_name = "Vocals"
+    sep.secondary_stem_name = "Instrumental"
+    sep.reset_perf_metrics = lambda: None
+    sep.add_perf_time = lambda *args, **kwargs: None
+    sep.prepare_mix = lambda _: np.zeros((2, 32), dtype=np.float32)
+    sep._demix_mlx = lambda _: {
+        "Vocals": np.zeros((2, 32), dtype=np.float32),
+        "Instrumental": np.zeros((2, 32), dtype=np.float32),
+    }
+    sep.get_stem_output_path = lambda stem, _: f"track_({stem}).wav"
+
+    written = []
+    sep.write_audio = lambda path, data: written.append(path)
+
+    out = sep.separate("/tmp/track.wav")
+
+    assert len(out) == 2
+    assert len(written) == 2
+    assert any("Vocals" in p for p in out)
+    assert any("Instrumental" in p for p in out)

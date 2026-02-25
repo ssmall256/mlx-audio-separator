@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import inspect
 import json
 import os
@@ -18,6 +19,34 @@ from mlx_audio_separator.utils.equivalence import compare_stem_maps, read_stem_m
 
 class ParityError(RuntimeError):
     """Raised for strict parity failures that should surface directly."""
+
+
+@contextmanager
+def _temporary_env(var: str, value: str):
+    previous = os.environ.get(var)
+    os.environ[var] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = previous
+
+
+@contextmanager
+def _demucs_strict_mlx_env(enabled: bool):
+    if not enabled:
+        yield
+        return
+
+    # Align Demucs MLX runtime with strict parity settings used in deterministic
+    # equivalence tooling; this avoids known fused-kernel drift in parity checks.
+    with _temporary_env("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "1"):
+        with _temporary_env("MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED", "0"):
+            with _temporary_env("MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP", "0"):
+                with _temporary_env("MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL", "1"):
+                    yield
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -223,6 +252,7 @@ def run_model(
     threshold_rel_l2: float,
     seed: int,
     demucs_shifts_zero: bool,
+    demucs_mlx_strict_kernels: bool,
     output_root: Path,
 ) -> dict[str, Any]:
     from mlx_audio_separator.core import Separator as MLXSeparator
@@ -260,110 +290,111 @@ def run_model(
     }
 
     try:
-        mk = dict(mlx_kwargs)
-        mk.setdefault("output_format", "WAV")
-        mk["output_dir"] = str(mlx_out)
-        if model_file_dir:
-            mk["model_file_dir"] = model_file_dir
-        mlx_sep = MLXSeparator(**mk)
+        with _demucs_strict_mlx_env(enabled=bool(demucs_mlx_strict_kernels)):
+            mk = dict(mlx_kwargs)
+            mk.setdefault("output_format", "WAV")
+            mk["output_dir"] = str(mlx_out)
+            if model_file_dir:
+                mk["model_file_dir"] = model_file_dir
+            mlx_sep = MLXSeparator(**mk)
 
-        pk = dict(pas_kwargs)
-        pk.setdefault("output_format", "WAV")
-        pk["output_dir"] = str(pas_out)
-        if model_file_dir:
-            pk["model_file_dir"] = model_file_dir
-        pk = _filter_kwargs_for_ctor(PASSeparator.__init__, pk)
-        pas_sep = PASSeparator(**pk)
+            pk = dict(pas_kwargs)
+            pk.setdefault("output_format", "WAV")
+            pk["output_dir"] = str(pas_out)
+            if model_file_dir:
+                pk["model_file_dir"] = model_file_dir
+            pk = _filter_kwargs_for_ctor(PASSeparator.__init__, pk)
+            pas_sep = PASSeparator(**pk)
 
-        t0 = time.perf_counter()
-        mlx_sep.load_model(model_filename=model)
-        row["load_mlx_s"] = round(time.perf_counter() - t0, 6)
-        row["arch_mlx"] = getattr(mlx_sep, "model_type", None)
+            t0 = time.perf_counter()
+            mlx_sep.load_model(model_filename=model)
+            row["load_mlx_s"] = round(time.perf_counter() - t0, 6)
+            row["arch_mlx"] = getattr(mlx_sep, "model_type", None)
 
-        t0 = time.perf_counter()
-        pas_sep.load_model(model_filename=model)
-        row["load_pas_s"] = round(time.perf_counter() - t0, 6)
-        row["arch_pas"] = getattr(pas_sep, "model_type", None)
+            t0 = time.perf_counter()
+            pas_sep.load_model(model_filename=model)
+            row["load_pas_s"] = round(time.perf_counter() - t0, 6)
+            row["arch_pas"] = getattr(pas_sep, "model_type", None)
 
-        _force_demucs_determinism(mlx_sep, shifts_zero=demucs_shifts_zero)
-        _force_demucs_determinism(pas_sep, shifts_zero=demucs_shifts_zero)
+            _force_demucs_determinism(mlx_sep, shifts_zero=demucs_shifts_zero)
+            _force_demucs_determinism(pas_sep, shifts_zero=demucs_shifts_zero)
+
+            max_rel_l2 = 0.0
+            for i, audio_path in enumerate(corpus, start=1):
+                resolved_mlx: list[str] = []
+                resolved_pas: list[str] = []
+                try:
+                    set_deterministic_seeds(seed)
+                    mlx_stems, mlx_meta = _backend_run(
+                        sep=mlx_sep,
+                        backend_name="mlx",
+                        audio_path=audio_path,
+                        output_dir=mlx_out,
+                        wait_seconds=0.5,
+                    )
+                    resolved_mlx = list(mlx_meta["outputs"])
+
+                    set_deterministic_seeds(seed)
+                    pas_stems, pas_meta = _backend_run(
+                        sep=pas_sep,
+                        backend_name="pas",
+                        audio_path=audio_path,
+                        output_dir=pas_out,
+                        wait_seconds=2.0,
+                    )
+                    resolved_pas = list(pas_meta["outputs"])
+
+                    compared = compare_stem_maps(
+                        baseline=pas_stems,
+                        candidate=mlx_stems,
+                        threshold_rel_l2=float(threshold_rel_l2),
+                    )
+                    max_rel_l2 = max(max_rel_l2, float(compared.get("max_rel_l2", 0.0)))
+                    file_ok = bool(compared.get("pass", False))
+
+                    row["files_checked"] += 1
+                    if file_ok:
+                        row["files_passed"] += 1
+
+                    row["file_results"].append(
+                        {
+                            "audio_path": audio_path,
+                            "index": i,
+                            "mlx_elapsed_s": mlx_meta["elapsed_s"],
+                            "pas_elapsed_s": pas_meta["elapsed_s"],
+                            "pass": file_ok,
+                            "max_rel_l2": float(compared.get("max_rel_l2", 0.0)),
+                            "detail": compared,
+                        }
+                    )
+
+                    if not file_ok:
+                        raise ParityError(
+                            f"parity drift on file {i}/{len(corpus)}: max_rel_l2={compared.get('max_rel_l2', None)}"
+                        )
+                except Exception as exc:
+                    row["status"] = f"error: {exc}"
+                    row["error"] = f"separate error: {exc}"
+                    row["diagnostic"] = {
+                        "audio_path": audio_path,
+                        "file_index": i,
+                        "exception_type": type(exc).__name__,
+                        "message": str(exc),
+                        "mlx_outputs": resolved_mlx,
+                        "pas_outputs": resolved_pas,
+                        "mlx_output_dir": str(mlx_out),
+                        "pas_output_dir": str(pas_out),
+                    }
+                    break
+                finally:
+                    _cleanup_outputs(resolved_mlx)
+                    _cleanup_outputs(resolved_pas)
+
+            row["max_rel_l2"] = round(max_rel_l2, 10)
     except Exception as exc:
         row["status"] = f"error: {exc}"
         row["error"] = f"load error: {exc}"
         return row
-
-    max_rel_l2 = 0.0
-    for i, audio_path in enumerate(corpus, start=1):
-        resolved_mlx: list[str] = []
-        resolved_pas: list[str] = []
-        try:
-            set_deterministic_seeds(seed)
-            mlx_stems, mlx_meta = _backend_run(
-                sep=mlx_sep,
-                backend_name="mlx",
-                audio_path=audio_path,
-                output_dir=mlx_out,
-                wait_seconds=0.5,
-            )
-            resolved_mlx = list(mlx_meta["outputs"])
-
-            set_deterministic_seeds(seed)
-            pas_stems, pas_meta = _backend_run(
-                sep=pas_sep,
-                backend_name="pas",
-                audio_path=audio_path,
-                output_dir=pas_out,
-                wait_seconds=2.0,
-            )
-            resolved_pas = list(pas_meta["outputs"])
-
-            compared = compare_stem_maps(
-                baseline=pas_stems,
-                candidate=mlx_stems,
-                threshold_rel_l2=float(threshold_rel_l2),
-            )
-            max_rel_l2 = max(max_rel_l2, float(compared.get("max_rel_l2", 0.0)))
-            file_ok = bool(compared.get("pass", False))
-
-            row["files_checked"] += 1
-            if file_ok:
-                row["files_passed"] += 1
-
-            row["file_results"].append(
-                {
-                    "audio_path": audio_path,
-                    "index": i,
-                    "mlx_elapsed_s": mlx_meta["elapsed_s"],
-                    "pas_elapsed_s": pas_meta["elapsed_s"],
-                    "pass": file_ok,
-                    "max_rel_l2": float(compared.get("max_rel_l2", 0.0)),
-                    "detail": compared,
-                }
-            )
-
-            if not file_ok:
-                raise ParityError(
-                    f"parity drift on file {i}/{len(corpus)}: max_rel_l2={compared.get('max_rel_l2', None)}"
-                )
-        except Exception as exc:
-            row["status"] = f"error: {exc}"
-            row["error"] = f"separate error: {exc}"
-            row["diagnostic"] = {
-                "audio_path": audio_path,
-                "file_index": i,
-                "exception_type": type(exc).__name__,
-                "message": str(exc),
-                "mlx_outputs": resolved_mlx,
-                "pas_outputs": resolved_pas,
-                "mlx_output_dir": str(mlx_out),
-                "pas_output_dir": str(pas_out),
-            }
-            break
-        finally:
-            _cleanup_outputs(resolved_mlx)
-            _cleanup_outputs(resolved_pas)
-
-    row["max_rel_l2"] = round(max_rel_l2, 10)
     if row.get("error"):
         return row
 
@@ -403,6 +434,15 @@ def parse_args() -> argparse.Namespace:
         help="Force Demucs shifts=0 during parity checks (default: true).",
     )
     p.add_argument(
+        "--demucs-mlx-strict-kernels",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Force strict Demucs MLX parity kernel settings "
+            "(disable fused iSTFT/vmap paths) during parity checks (default: true)."
+        ),
+    )
+    p.add_argument(
         "--fail-fast",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -438,6 +478,7 @@ def main():
                 threshold_rel_l2=float(args.threshold_rel_l2),
                 seed=int(args.seed),
                 demucs_shifts_zero=bool(args.demucs_shifts_zero),
+                demucs_mlx_strict_kernels=bool(args.demucs_mlx_strict_kernels),
                 output_root=output_root,
             )
             rows.append(row)
@@ -474,6 +515,7 @@ def main():
             "threshold_rel_l2": float(args.threshold_rel_l2),
             "seed": int(args.seed),
             "demucs_shifts_zero": bool(args.demucs_shifts_zero),
+            "demucs_mlx_strict_kernels": bool(args.demucs_mlx_strict_kernels),
             "fail_fast": bool(args.fail_fast),
             "max_files": int(args.max_files),
             "mlx_config": mlx_kwargs,

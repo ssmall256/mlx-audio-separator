@@ -253,15 +253,9 @@ class MDXCSeparator(CommonSeparator):
         output_files = []
 
         if isinstance(source, dict):
-            # Determine stem list
-            training = self.model_data.get("training", {})
-            target_instrument = training.get("target_instrument")
-            instruments = training.get("instruments", [])
-
-            if target_instrument:
-                stem_list = [target_instrument]
-            else:
-                stem_list = instruments
+            # Always emit all stems returned by inference unless single-stem output is requested.
+            # For single-target models, _demix_mlx can synthesize a complementary secondary stem.
+            stem_list = list(source.keys())
 
             for stem_name in stem_list:
                 if self.output_single_stem and self.output_single_stem.lower() != stem_name.lower():
