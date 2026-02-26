@@ -3,6 +3,7 @@
 MLX-native stem separation for Apple Silicon Macs.
 
 This project ports the inference paths from [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) to MLX so separation runs on Apple Silicon without requiring PyTorch or ONNX Runtime at inference time.
+Core runtime components are powered by [mlx-audio-io](https://github.com/ssmall256/mlx-audio-io) (audio I/O) and [mlx-spectro](https://github.com/ssmall256/mlx-spectro) (spectral transforms).
 
 ## Requirements
 
@@ -135,6 +136,8 @@ The models used by this project were trained by the [Ultimate Vocal Remover](htt
 
 Additional references:
 
+- [mlx-audio-io](https://github.com/ssmall256/mlx-audio-io)
+- [mlx-spectro](https://github.com/ssmall256/mlx-spectro)
 - [BS-Roformer](https://arxiv.org/abs/2309.02612)
 - [Demucs (Meta Research)](https://github.com/facebookresearch/demucs)
 - [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
