@@ -35,7 +35,7 @@ Create a text file with one mix path per line:
 ## Step 2: Build Reference Manifest Scaffold
 
 ```bash
-python scripts/perf/generate_reference_manifest.py \
+uv run python scripts/perf/generate_reference_manifest.py \
   --corpus-file /path/to/corpus.txt \
   --output-json /path/to/reference_manifest.json \
   --search-dir /path/to/reference_stems \
@@ -49,7 +49,8 @@ Notes:
 ## Step 3: Run Unified Optimization Report
 
 ```bash
-python scripts/perf/run_optimization_report.py \
+PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
+uv run --with audio-separator --with onnxruntime python scripts/perf/run_optimization_report.py \
   --corpus-file /path/to/corpus.txt \
   --baseline-config /path/to/baseline.json \
   --candidate-config /path/to/candidate.json \

@@ -132,7 +132,7 @@ mlx-audio-separator \
 Unified optimization report (latency + parity + quality):
 
 ```bash
-python scripts/perf/run_optimization_report.py \
+uv run python scripts/perf/run_optimization_report.py \
   --corpus-file /path/to/corpus.txt \
   --baseline-config /path/to/baseline.json \
   --candidate-config /path/to/candidate.json \
@@ -144,7 +144,8 @@ python scripts/perf/run_optimization_report.py \
 MLX vs python-audio-separator ABBA latency comparison on overlapping models:
 
 ```bash
-python scripts/perf/mlx_vs_pas_abba.py \
+PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
+uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_abba.py \
   --corpus-file /path/to/corpus.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
   --model-file-dir /tmp/audio-separator-models \
@@ -155,7 +156,8 @@ python scripts/perf/mlx_vs_pas_abba.py \
 MLX vs `audio-separator` parity check (fail-fast, one command):
 
 ```bash
-python scripts/perf/mlx_vs_pas_parity.py \
+PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
+uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_parity.py \
   --corpus-file /path/to/corpus.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
   --model-file-dir /tmp/audio-separator-models \

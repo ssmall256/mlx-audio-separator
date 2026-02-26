@@ -38,9 +38,20 @@ uv run python -m mlx_audio_separator.utils.cli \
 Evaluate benchmark gate:
 
 ```bash
+BENCH_JSON=/tmp/bench-release-YYYYMMDD-HHMMSS/benchmark_results.json
+TOTAL_MODELS=$(BENCH_JSON="$BENCH_JSON" uv run python - <<'PY'
+import json, os
+path = os.path.expanduser(os.environ["BENCH_JSON"])
+with open(path, encoding="utf-8") as f:
+    payload = json.load(f)
+rows = payload.get("results", payload if isinstance(payload, list) else [])
+print(len(rows))
+PY
+)
+
 uv run python scripts/release/check_release_readiness.py \
-  --benchmark-json /tmp/bench-release-YYYYMMDD-HHMMSS/benchmark_results.json \
-  --require-total-models 152 \
+  --benchmark-json "$BENCH_JSON" \
+  --require-total-models "$TOTAL_MODELS" \
   --max-failures 0 \
   --min-success-rate 1.0 \
   --require-model-ok htdemucs_ft.yaml \
@@ -64,7 +75,8 @@ uv run python scripts/perf/run_optimization_report.py \
 Generate MLX vs python-audio-separator ABBA comparison (overlap set):
 
 ```bash
-uv run python scripts/perf/mlx_vs_pas_abba.py \
+PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
+uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_abba.py \
   --corpus-file /path/to/corpus.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
   --model-file-dir /tmp/audio-separator-models \
@@ -82,7 +94,8 @@ Run MLX vs `audio-separator` parity smoke (fail-fast):
 
 ```bash
 printf '%s\n' /path/to/one/mix.wav > /tmp/corpus_one.txt
-uv run python scripts/perf/mlx_vs_pas_parity.py \
+PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
+uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_parity.py \
   --corpus-file /tmp/corpus_one.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
   --model-file-dir /tmp/audio-separator-models \
