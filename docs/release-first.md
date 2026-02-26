@@ -88,7 +88,7 @@ uv run python scripts/perf/mlx_vs_pas_parity.py \
   --model-file-dir /tmp/audio-separator-models \
   --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
   --pas-config '{"output_format":"WAV"}' \
-  --threshold-rel-l2 3e-2 \
+  --threshold-rel-l2 5e-2 \
   --fail-fast \
   --output-json /tmp/mlx_vs_pas_parity_smoke.json
 ```

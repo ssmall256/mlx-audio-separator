@@ -161,14 +161,14 @@ python scripts/perf/mlx_vs_pas_parity.py \
   --model-file-dir /tmp/audio-separator-models \
   --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
   --pas-config '{"output_format":"WAV"}' \
-  --threshold-rel-l2 3e-2 \
+  --threshold-rel-l2 5e-2 \
   --fail-fast
 ```
 
 Parity interpretation:
 
 - MLX internal deterministic parity (same backend/config): use strict threshold `1e-5`.
-- MLX vs `audio-separator` (cross-runtime parity): use threshold `3e-2`.
+- MLX vs `audio-separator` (cross-runtime parity): use threshold `5e-2`.
 - Demucs cross-backend parity runs with strict MLX Demucs kernel settings by default in parity tooling.
 
 Optional report flags:

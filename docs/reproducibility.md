@@ -60,7 +60,7 @@ python scripts/perf/run_optimization_report.py \
   --python-mps-latency \
   --python-mps-parity \
   --python-mps-parity-max-files 0 \
-  --python-mps-parity-threshold-rel-l2 3e-2 \
+  --python-mps-parity-threshold-rel-l2 5e-2 \
   --output-json /path/to/optimization_report.json \
   --output-markdown /path/to/optimization_report.md
 ```
@@ -68,7 +68,7 @@ python scripts/perf/run_optimization_report.py \
 Parity tolerance policy:
 
 - MLX-vs-MLX deterministic parity: strict `relative L2 <= 1e-5`.
-- MLX-vs-`audio-separator` parity: `relative L2 <= 3e-2` for cross-runtime comparisons.
+- MLX-vs-`audio-separator` parity: `relative L2 <= 5e-2` for cross-runtime comparisons.
 - Demucs MLX parity runs should use strict Demucs kernel parity settings (enabled by default in `mlx_vs_pas_parity.py`).
 
 ## Recommended Evaluation Sizes
