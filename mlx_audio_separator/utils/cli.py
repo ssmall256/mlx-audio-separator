@@ -95,12 +95,12 @@ def main():
     common_params.add_argument(
         "--experimental_compile_shapeless",
         action="store_true",
-        help="Enable experimental shapeless compilation mode where available (currently ignored for Roformer by policy).",
+        help=argparse.SUPPRESS,
     )
     common_params.add_argument(
         "--experimental_roformer_static_compiled_demix",
         action="store_true",
-        help="Compatibility flag; Roformer static compiled demix path is currently disabled by policy.",
+        help=argparse.SUPPRESS,
     )
     common_params.add_argument("--perf_trace", action="store_true", help="Write per-file performance trace metrics.")
     common_params.add_argument("--perf_trace_path", default=None, help="JSONL path for performance trace output.")
@@ -145,6 +145,12 @@ def main():
     else:
         log_level = getattr(logging, args.log_level.upper())
     logger.setLevel(log_level)
+
+    # Keep compatibility for legacy experimental flags that are currently inactive by policy.
+    if args.experimental_compile_shapeless or args.experimental_roformer_static_compiled_demix:
+        logger.warning(
+            "Compatibility flag(s) accepted for compatibility; currently inactive by policy."
+        )
 
     # Set MLX environment variables for performance
     os.environ.setdefault("MLX_USE_FAST_SDP", "1")

@@ -1,6 +1,7 @@
 # Release-First Playbook
 
 This playbook is the default release path: stabilize and ship reliability first, then iterate on speed behind explicit opt-in controls.
+It is intentionally more detailed than `README.md` and is meant for release engineering workflows.
 
 ## Goals
 

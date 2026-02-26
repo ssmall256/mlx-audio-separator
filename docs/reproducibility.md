@@ -1,6 +1,7 @@
 # Reproducibility Guide (No Audio Redistribution)
 
 This project supports reproducible performance and quality claims without shipping copyrighted audio.
+For a concise product overview, use `README.md`; this document keeps full methodology and reporting details.
 
 ## What To Publish
 

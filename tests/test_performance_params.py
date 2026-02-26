@@ -1,6 +1,7 @@
 """Tests for performance params and tuning helpers."""
 
 import json
+import logging
 
 import pytest
 
@@ -160,3 +161,52 @@ def test_cli_accepts_latency_safe_v2(monkeypatch, tmp_path):
     )
     cli.main()
     assert captured["performance_params"]["speed_mode"] == "latency_safe_v2"
+
+
+def test_cli_help_hides_inactive_compat_flags(monkeypatch, capsys):
+    import mlx_audio_separator.utils.cli as cli
+
+    monkeypatch.setattr("sys.argv", ["mlx-audio-separator", "--help"])
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    out = capsys.readouterr().out
+    assert "--experimental_compile_shapeless" not in out
+    assert "--experimental_roformer_static_compiled_demix" not in out
+
+
+def test_cli_warns_when_inactive_compat_flags_supplied(monkeypatch, tmp_path, caplog):
+    import mlx_audio_separator.utils.cli as cli
+
+    input_wav = tmp_path / "in.wav"
+    input_wav.write_bytes(b"fake")
+    captured = {}
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def load_model(self, model_filename):
+            captured["model_filename"] = model_filename
+
+        def separate(self, audio_files, custom_output_names=None):
+            return []
+
+    monkeypatch.setattr("mlx_audio_separator.core.Separator", FakeSeparator)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mlx-audio-separator",
+            str(input_wav),
+            "--experimental_compile_shapeless",
+            "--experimental_roformer_static_compiled_demix",
+        ],
+    )
+    caplog.set_level(logging.WARNING, logger="mlx_audio_separator.utils.cli")
+
+    cli.main()
+
+    assert any(
+        "accepted for compatibility; currently inactive by policy" in rec.message
+        for rec in caplog.records
+    )

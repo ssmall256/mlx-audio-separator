@@ -2,6 +2,17 @@
 
 Wave 4 is performance work after release stabilization. All new behavior remains opt-in until promotion criteria are met.
 
+## Experimental Controls and Status
+
+| Control | Scope | Status | Notes |
+|---|---|---|---|
+| `--speed_mode latency_safe_v2` | Runtime profile | Active (opt-in) | Experimental release profile; defaults unchanged. |
+| `--auto_tune_batch` | Runtime profile | Active (opt-in) | Per-arch auto-tuning probe path. |
+| `--experimental_vectorized_chunking` | MDXC | Active (opt-in) | Experimental MDXC chunk scheduler path. |
+| `--experimental_compile_model_forward` | MDX23C (MDXC path) | Active (opt-in) | Compiled forward path where supported. |
+| `--experimental_compile_shapeless` | Roformer compile path | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
+| `--experimental_roformer_static_compiled_demix` | Roformer static demix | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
+
 ## Guardrails
 
 1. No default behavior changes in Wave 4.
