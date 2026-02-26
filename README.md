@@ -4,6 +4,12 @@ MLX-native stem separation for Apple Silicon Macs.
 
 This project ports the inference paths from [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) to MLX so separation runs on Apple Silicon without requiring PyTorch or ONNX Runtime at inference time.
 
+## Requirements
+
+- macOS 13+ (Ventura or later)
+- Apple Silicon (M1/M2/M3/M4)
+- Python 3.10+
+
 ## Installation
 
 ```bash
@@ -56,7 +62,7 @@ Release validation snapshot (2026-02-24 to 2026-02-26):
 
 | Check | Result |
 |---|---|
-| Full-catalog benchmark gate | 152/152 models `ok` (0 failures) |
+| Full-catalog benchmark gate | 163/163 models `ok` (0 failures) |
 | Unit tests | 167 passed, 1 skipped |
 | MLX vs `audio-separator` parity smoke | 4/4 models passed (`rel L2 <= 5e-2`) |
 
@@ -106,17 +112,30 @@ mlx-audio-separator \
   --benchmark_profile
 ```
 
-## Advanced Documentation
+## Documentation
 
-- Release evidence snapshot: [`docs/release-validation.md`](docs/release-validation.md)
-- Release execution playbook: [`docs/release-first.md`](docs/release-first.md)
-- Reproducibility guide: [`docs/reproducibility.md`](docs/reproducibility.md)
-- Wave 4 opt-in/experimental roadmap: [`docs/wave4-opt-in.md`](docs/wave4-opt-in.md)
-- Changelog: [`CHANGELOG.md`](CHANGELOG.md)
-- Third-party notices: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+| Document | Description |
+|---|---|
+| [`docs/release-validation.md`](docs/release-validation.md) | Release evidence snapshot |
+| [`docs/release-first.md`](docs/release-first.md) | Release execution playbook |
+| [`docs/reproducibility.md`](docs/reproducibility.md) | Reproducibility guide |
+| [`docs/wave4-opt-in.md`](docs/wave4-opt-in.md) | Wave 4 opt-in/experimental roadmap |
+| [`CHANGELOG.md`](CHANGELOG.md) | Changelog |
+| [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | Third-party attribution and license notices |
 
-## License and Attribution
+## License
 
 This project is MIT licensed.
 
-`mlx-audio-separator` is derived from and inspired by [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) (MIT) and the Ultimate Vocal Remover ecosystem. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for attribution and license details.
+## Acknowledgments
+
+`mlx-audio-separator` is derived from [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) (MIT) by [beveradb](https://github.com/beveradb) and the [nomadkaraoke](https://github.com/nomadkaraoke) community. Substantial portions of the architecture, model loading, and separation logic are adapted from that project. If you find this package useful, please also star and support the upstream project.
+
+The models used by this project were trained by the [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) community, primarily [@Anjok07](https://github.com/Anjok07) and [@aufr33](https://github.com/aufr33). See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for full attribution and license details.
+
+Additional references:
+
+- [BS-Roformer](https://arxiv.org/abs/2309.02612)
+- [Demucs (Meta Research)](https://github.com/facebookresearch/demucs)
+- [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
+- [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)

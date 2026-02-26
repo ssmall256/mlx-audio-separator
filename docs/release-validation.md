@@ -20,7 +20,7 @@ This document captures the fixed release evidence snapshot referenced by `README
 
 | Check | Result |
 |---|---|
-| Full-catalog benchmark release gate | `152 / 152` models `ok`, `0` failures |
+| Full-catalog benchmark release gate | `163 / 163` models `ok`, `0` failures |
 | Unit tests | `167 passed`, `1 skipped` |
 | MLX vs `audio-separator` parity smoke | `4 / 4` models passed (`rel L2 <= 5e-2`) |
 
