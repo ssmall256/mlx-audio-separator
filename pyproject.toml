@@ -10,6 +10,19 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "ssmall256"}]
+keywords = [
+    "audio",
+    "music",
+    "stem-separation",
+    "source-separation",
+    "mlx",
+    "apple-silicon",
+    "vocals",
+    "instrumental",
+    "karaoke",
+    "demucs",
+    "roformer",
+]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
@@ -43,6 +56,7 @@ dev = [
 convert = [
     "torch>=2.3",
     "onnx>=1.15",
+    "demucs>=4.0",
 ]
 
 [project.scripts]
@@ -52,12 +66,17 @@ mlx-audio-separator = "mlx_audio_separator.utils.cli:main"
 Homepage = "https://github.com/ssmall256/mlx-audio-separator"
 Repository = "https://github.com/ssmall256/mlx-audio-separator"
 Issues = "https://github.com/ssmall256/mlx-audio-separator/issues"
+Changelog = "https://github.com/ssmall256/mlx-audio-separator/blob/main/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 140
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"
 
 [tool.setuptools]
 include-package-data = true
