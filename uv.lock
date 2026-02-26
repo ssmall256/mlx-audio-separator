@@ -499,14 +499,14 @@ cpu = [
 
 [[package]]
 name = "mlx-audio-io"
-version = "1.3.0"
+version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mlx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "mlx", extra = ["cpu"], marker = "sys_platform == 'linux'" },
     { name = "pytest" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/be/f206ea8f27268f3e952094de54d89afea3a86209d6071c2882d9333e6322/mlx_audio_io-1.3.0.tar.gz", hash = "sha256:179e033594ce8b3b7bd37115b413b9edeb7646676ace4dddce9625dd22709848", size = 290243, upload-time = "2026-02-22T13:35:44.599Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/f1/bd78057566bca62f1191a5e43ff6de33c6acc283f4057f3a4ab1471fafcc/mlx_audio_io-1.3.1.tar.gz", hash = "sha256:69102f253127dc1b955ea9acb4fa9996e0e02e0365456a8598b6b3e4f15ab3fd", size = 297314, upload-time = "2026-02-26T18:29:29.259Z" }
 
 [[package]]
 name = "mlx-audio-separator"
@@ -538,8 +538,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mlx", specifier = ">=0.30.3" },
-    { name = "mlx-audio-io" },
-    { name = "mlx-spectro" },
+    { name = "mlx-audio-io", specifier = ">=1.3.1" },
+    { name = "mlx-spectro", specifier = ">=0.2.2" },
     { name = "numpy", specifier = ">=2" },
     { name = "onnx", marker = "extra == 'convert'", specifier = ">=1.15" },
     { name = "packaging" },
@@ -574,16 +574,16 @@ wheels = [
 
 [[package]]
 name = "mlx-spectro"
-version = "0.2.1"
+version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mlx" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/0e/0ac8f86ba086af7d86b8ea2099545b10744830c761363123da89149d6623/mlx_spectro-0.2.1.tar.gz", hash = "sha256:4f26ad258c9a7dde49c99d1cfa0a134dcd60050b926116ac31a70e314818d6b1", size = 75563, upload-time = "2026-02-17T22:43:56.456Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/76/3f7bd9e6dcb2b597a9f300ae0d467d7452e7302b8c982e010cc55e9c8906/mlx_spectro-0.2.2.tar.gz", hash = "sha256:c58c93dde8d717a564c97ba0bfcf2c7558fdeaa5c5103adedca2bd707c2c3647", size = 76139, upload-time = "2026-02-25T21:40:57.444Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/53/1fbd29aea1b4efab31fa073c20b4d287dfd858a9cc67c1f1747737dd0ab6/mlx_spectro-0.2.1-py3-none-any.whl", hash = "sha256:368b32fb537112cf830b35dbebde7db49f14c7a2e0565407b11a2f42ef727957", size = 28852, upload-time = "2026-02-17T22:43:54.891Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/9f/a8c98d12ed7699c772523270e599c3fff67100dbe77811bb968cbd752af2/mlx_spectro-0.2.2-py3-none-any.whl", hash = "sha256:0a7017e54ed0538cf7b0d53eec5e2661b0cbcf0ecde4c758529024ad3215ec99", size = 29424, upload-time = "2026-02-25T21:40:55.934Z" },
 ]
 
 [[package]]
