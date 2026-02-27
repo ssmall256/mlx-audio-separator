@@ -48,9 +48,10 @@ def _fused_groupnorm_mode() -> str:
     raw_env = os.getenv("MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE")
     if raw_env is None or raw_env.strip() == "":
         deterministic = os.getenv("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "").strip().lower()
-        # In deterministic mode, disable fused GLU due known run-to-run drift.
+        # In deterministic mode, disable all fused GroupNorm kernels due known
+        # run-to-run drift in fused reduction kernels.
         if deterministic in {"1", "true", "yes", "on"}:
-            return "gelu_only"
+            return "off"
         return "all"
     raw = raw_env.strip().lower()
     if raw in {"", "all", "on", "true", "1"}:
@@ -90,6 +91,12 @@ def _fused_groupnorm_glu_impl() -> str:
     if raw in {"legacy", "old"}:
         return "legacy"
     return "hybrid"
+
+
+def _fused_groupnorm_glu_enable_multigroup() -> bool:
+    """Enable experimental multigroup hybrid GroupNorm+GLU fast path."""
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _stable_threadgroup_size(elems_per_group: int, cap_env_var: str | None = None) -> int:
@@ -581,9 +588,12 @@ def fused_groupnorm_glu(
 
     Input shape: (B, 2C, ...) -> Output shape: (B, C, ...)
 
-    Note: Only supported when num_groups=1 or when channels_per_group is even
-    (so the GLU split aligns with group boundaries). When num_groups > 1 and
-    channels_per_group is odd, falls back to separate GroupNorm + GLU.
+    Implementation policy:
+      - hybrid (default): GroupNorm+affine in float32 + fused GLU kernel.
+        For num_groups > 1, this is opt-in via
+        MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1.
+      - legacy: monolithic fused GroupNorm+GLU kernel (kept for experiments).
+        Restricted to num_groups == 1.
     """
     orig_shape = x.shape
     B = x.shape[0]
@@ -606,17 +616,28 @@ def fused_groupnorm_glu(
         # Respect runtime mode: disable fused GLU kernel.
         return _groupnorm_glu_fallback(x, weight, bias, num_groups, eps)
 
-    if not HAS_METAL or num_groups > 1:
+    if not HAS_METAL:
         # Pure-MLX fallback: separate GroupNorm + GLU.
-        # Also used when num_groups > 1 because the GLU split crosses group
-        # boundaries, which can't be handled in a single kernel dispatch.
         return _groupnorm_glu_fallback(x, weight, bias, num_groups, eps)
 
-    if _fused_groupnorm_glu_impl() != "legacy":
-        # Deterministic hybrid path: GroupNorm+affine in float32 followed by
-        # a fused GLU kernel launch.
-        normed = _groupnorm_affine_fp32(x, weight, bias, num_groups, eps).astype(x.dtype)
-        return fused_glu(normed, axis=1)
+    impl = _fused_groupnorm_glu_impl()
+    if impl != "legacy":
+        if num_groups > 1 and not _fused_groupnorm_glu_enable_multigroup():
+            return _groupnorm_glu_fallback(x, weight, bias, num_groups, eps)
+        # Correctness-first hybrid path:
+        # keep GroupNorm+affine and GLU in float32, cast once at the end.
+        normed_fp32 = _groupnorm_affine_fp32(x, weight, bias, num_groups, eps)
+        out_fp32 = fused_glu(normed_fp32, axis=1)
+        return out_fp32.astype(x.dtype)
+
+    # Legacy monolithic kernel is restricted to num_groups == 1.
+    # For grouped normalization, prefer the correctness-first hybrid path above.
+    if num_groups > 1:
+        if not _fused_groupnorm_glu_enable_multigroup():
+            return _groupnorm_glu_fallback(x, weight, bias, num_groups, eps)
+        normed_fp32 = _groupnorm_affine_fp32(x, weight, bias, num_groups, eps)
+        out_fp32 = fused_glu(normed_fp32, axis=1)
+        return out_fp32.astype(x.dtype)
 
     x_contig = mx.contiguous(x.reshape(B, C_full, spatial_size))
     weight = mx.contiguous(weight.astype(mx.float32))
