@@ -2,7 +2,7 @@
 
 MLX-native stem separation for Apple Silicon Macs.
 
-This project ports the inference paths from [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) to MLX so separation runs on Apple Silicon without requiring PyTorch or ONNX Runtime at inference time.
+This project ports the inference paths from [audio-separator](https://pypi.org/project/audio-separator/) (upstream repo: [nomadkaraoke/python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)) to MLX so separation runs on Apple Silicon without requiring PyTorch or ONNX Runtime at inference time.
 Core runtime components are powered by [mlx-audio-io](https://github.com/ssmall256/mlx-audio-io) (audio I/O) and [mlx-spectro](https://github.com/ssmall256/mlx-spectro) (spectral transforms).
 
 ## Requirements
@@ -130,7 +130,7 @@ This project is MIT licensed.
 
 ## Acknowledgments
 
-`mlx-audio-separator` is derived from [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) (MIT) by [beveradb](https://github.com/beveradb) and the [nomadkaraoke](https://github.com/nomadkaraoke) community. Substantial portions of the architecture, model loading, and separation logic are adapted from that project. If you find this package useful, please also star and support the upstream project.
+`mlx-audio-separator` is derived from [audio-separator](https://pypi.org/project/audio-separator/) (upstream repo: [nomadkaraoke/python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator), MIT) by [beveradb](https://github.com/beveradb) and the [nomadkaraoke](https://github.com/nomadkaraoke) community. Substantial portions of the architecture, model loading, and separation logic are adapted from that project. If you find this package useful, please also star and support the upstream project.
 
 The models used by this project were trained by the [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) community, primarily [@Anjok07](https://github.com/Anjok07) and [@aufr33](https://github.com/aufr33). See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for full attribution and license details.
 
@@ -141,4 +141,4 @@ Additional references:
 - [BS-Roformer](https://arxiv.org/abs/2309.02612)
 - [Demucs (Meta Research)](https://github.com/facebookresearch/demucs)
 - [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-- [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
+- [audio-separator](https://pypi.org/project/audio-separator/) / [nomadkaraoke/python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
