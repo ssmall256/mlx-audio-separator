@@ -365,7 +365,8 @@ def convert_htdemucs_weights(
     except ImportError:
         raise ImportError(
             "Model conversion requires the [convert] extras. "
-            "Install with: pip install 'demucs-mlx[convert]'"
+            "Install with: pip install 'demucs-mlx[convert]' "
+            "or pip install 'mlx-audio-separator[convert]'"
         ) from None
 
     if model_name not in MLX_MODEL_REGISTRY:

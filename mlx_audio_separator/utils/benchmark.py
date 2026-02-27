@@ -243,7 +243,8 @@ def run_benchmark(
     if any(info["Type"] == "Demucs" for _, info in work_list) and not _demucs_conversion_dependency_available():
         demucs_reason = (
             "skipped: missing demucs conversion dependency "
-            "(install with: pip install 'demucs-mlx[convert]')"
+            "(install with: pip install 'demucs-mlx[convert]' "
+            "or pip install 'mlx-audio-separator[convert]')"
         )
         non_demucs = []
         for filename, info in work_list:
