@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-audio-separator"
-version = "0.1.2rc1"
+version = "0.1.2"
 description = "MLX-native audio stem separation for Apple Silicon"
 readme = "README.md"
 requires-python = ">=3.10"
