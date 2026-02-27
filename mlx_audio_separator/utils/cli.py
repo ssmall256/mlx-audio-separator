@@ -88,9 +88,19 @@ def main():
         help="Enable experimental vectorized chunking path (currently MDXC only).",
     )
     common_params.add_argument(
+        "--experimental_roformer_fast_norm",
+        action="store_true",
+        help="Enable experimental Roformer fast norm path via mx.fast.rms_norm.",
+    )
+    common_params.add_argument(
         "--experimental_compile_model_forward",
         action="store_true",
         help="Enable experimental compiled forward pass for model inference (currently MDX23C path in MDXC).",
+    )
+    common_params.add_argument(
+        "--experimental_vr_device_residency",
+        action="store_true",
+        help="Enable experimental VR device-resident mask accumulation path.",
     )
     common_params.add_argument(
         "--experimental_compile_shapeless",
@@ -275,7 +285,9 @@ def main():
             "cache_clear_policy": args.cache_clear_policy,
             "write_workers": args.write_workers,
             "experimental_vectorized_chunking": args.experimental_vectorized_chunking,
+            "experimental_roformer_fast_norm": args.experimental_roformer_fast_norm,
             "experimental_compile_model_forward": args.experimental_compile_model_forward,
+            "experimental_vr_device_residency": args.experimental_vr_device_residency,
             "experimental_compile_shapeless": args.experimental_compile_shapeless,
             "experimental_roformer_static_compiled_demix": args.experimental_roformer_static_compiled_demix,
             "perf_trace": args.perf_trace,

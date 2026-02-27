@@ -37,6 +37,9 @@ class VRSeparator(CommonSeparator):
         self.window_size = arch_config.get("window_size", 512)
         self.high_end_process = arch_config.get("high_end_process", False)
         self.aggression = float(int(arch_config.get("aggression", 5)) / 100)
+        self.experimental_vr_device_residency = bool(
+            self.performance_params.get("experimental_vr_device_residency", False)
+        )
 
         self.input_high_end_h = None
         self.input_high_end = None
@@ -176,7 +179,7 @@ class VRSeparator(CommonSeparator):
     def _inference_vr(self, X_spec, aggressiveness):
         """Run VR inference with windowed processing."""
 
-        def _execute(X_mag_pad, roi_size):
+        def _execute_cpu(X_mag_pad, roi_size):
             patches = (X_mag_pad.shape[2] - 2 * self.model_run.offset) // roi_size
             if patches <= 0:
                 raise ValueError("Window size error: no patches could be processed")
@@ -212,6 +215,46 @@ class VRSeparator(CommonSeparator):
 
             return mask
 
+        def _execute_device(X_mag_pad, roi_size):
+            patches = (X_mag_pad.shape[2] - 2 * self.model_run.offset) // roi_size
+            if patches <= 0:
+                raise ValueError("Window size error: no patches could be processed")
+
+            batch_size = max(1, int(self.batch_size))
+            X_mag_pad_mx = mx.array(X_mag_pad, dtype=mx.float32)
+            arange_window = mx.arange(int(self.window_size), dtype=mx.int32)
+            mask_mx = mx.zeros((2, X_mag_pad.shape[1], patches * roi_size), dtype=mx.float32)
+            eval_flush_interval = max(8, batch_size * 2)
+            pending_updates = 0
+
+            for i in tqdm(range(0, patches, batch_size), desc="VR inference (device mask)"):
+                batch_end = min(i + batch_size, patches)
+                starts = [patch_idx * roi_size for patch_idx in range(i, batch_end)]
+                if not starts:
+                    continue
+
+                starts_mx = mx.array(starts, dtype=mx.int32)
+                gather_idx = starts_mx[:, None] + arange_window[None, :]
+                # (2, F, B, W) -> (B, F, W, 2)
+                X_batch_mx = mx.transpose(X_mag_pad_mx[:, :, gather_idx], (2, 1, 3, 0))
+                pred = self.model_run.predict_mask(X_batch_mx)  # (B, F, roi, 2)
+
+                # (B, F, roi, 2) -> (2, F, B * roi)
+                pred = mx.transpose(pred, (3, 1, 0, 2))
+                pred = mx.reshape(pred, (pred.shape[0], pred.shape[1], pred.shape[2] * pred.shape[3]))
+
+                write_start = i * roi_size
+                write_end = write_start + int(pred.shape[2])
+                mask_mx = mask_mx.at[:, :, write_start:write_end].add(pred)
+                pending_updates += 1
+
+                if pending_updates >= eval_flush_interval:
+                    mx.eval(mask_mx)
+                    pending_updates = 0
+
+            mx.eval(mask_mx)
+            return np.array(mask_mx, dtype=np.float32, copy=False)
+
         def postprocess(mask, X_mag, X_phase):
             is_non_accom_stem = self.primary_stem_name in CommonSeparator.NON_ACCOM_STEMS
             mask = spec_utils.adjust_aggr(mask, is_non_accom_stem, aggressiveness)
@@ -231,7 +274,10 @@ class VRSeparator(CommonSeparator):
         if max_val > 0:
             X_mag_pad /= max_val
 
-        mask = _execute(X_mag_pad, roi_size)
+        if self.experimental_vr_device_residency:
+            mask = _execute_device(X_mag_pad, roi_size)
+        else:
+            mask = _execute_cpu(X_mag_pad, roi_size)
 
         if self.enable_tta:
             pad_l += roi_size // 2
@@ -240,7 +286,10 @@ class VRSeparator(CommonSeparator):
             max_val = X_mag_pad.max()
             if max_val > 0:
                 X_mag_pad /= max_val
-            mask_tta = _execute(X_mag_pad, roi_size)
+            if self.experimental_vr_device_residency:
+                mask_tta = _execute_device(X_mag_pad, roi_size)
+            else:
+                mask_tta = _execute_cpu(X_mag_pad, roi_size)
             mask_tta = mask_tta[:, :, roi_size // 2:]
             mask = (mask[:, :, :n_frame] + mask_tta[:, :, :n_frame]) * 0.5
         else:
