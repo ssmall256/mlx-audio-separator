@@ -9,7 +9,9 @@ Wave 4 is performance work after release stabilization. All new behavior remains
 | `--speed_mode latency_safe_v2` | Runtime profile | Active (opt-in) | Experimental release profile; defaults unchanged. |
 | `--auto_tune_batch` | Runtime profile | Active (opt-in) | Per-arch auto-tuning probe path. |
 | `--experimental_vectorized_chunking` | MDXC | Active (opt-in) | Experimental MDXC chunk scheduler path. |
+| `--experimental_roformer_fast_norm` | Roformer (MDXC path) | Active (opt-in) | Uses `mx.fast.rms_norm` in Roformer `L2Norm` blocks. |
 | `--experimental_compile_model_forward` | MDX23C (MDXC path) | Active (opt-in) | Compiled forward path where supported. |
+| `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1` | Demucs fused GroupNorm+GLU | Active (opt-in, env) | Enables multigroup hybrid GN+GLU fast path (`num_groups > 1`) for Demucs experiments. |
 | `--experimental_compile_shapeless` | Roformer compile path | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
 | `--experimental_roformer_static_compiled_demix` | Roformer static demix | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
 
@@ -39,6 +41,12 @@ Acceptance:
 1. Investigate and remove avoidable eval barriers in Demucs inference path.
 2. Preserve strict deterministic controls for equivalence checks.
 3. Keep strict Demucs equivalence gating opt-in until parity evidence is stable.
+
+Current status:
+
+1. Correctness-first hybrid GN+GLU path is implemented (fp32 GN+affine + fp32 GLU + final cast).
+2. Deterministic mode now defaults fused GroupNorm mode to `off` (stable parity path).
+3. Multigroup GN+GLU fast path is available only as opt-in via `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1`.
 
 Acceptance:
 
@@ -73,3 +81,21 @@ A Wave 4 feature can move from opt-in to default only after:
 1. Two clean benchmark passes on at least two Apple Silicon machines.
 2. Equivalence/quality gates pass for affected architectures.
 3. Release-readiness gate remains green (`0` failures).
+
+## Roformer Fast-Norm Evaluation
+
+Use the provided configs to run latency + parity checks before considering default promotion:
+
+```bash
+uv run --with torch python scripts/perf/compare_latency.py \
+  --corpus-file /tmp/corpus_one.txt \
+  --baseline-config scripts/perf/configs/roformer_fast_norm_baseline.json \
+  --candidate-config scripts/perf/configs/roformer_fast_norm_candidate.json \
+  --model-file-dir /tmp/audio-separator-models \
+  --target-improvement-demucs-mdxc 2.0 \
+  --equivalence-check \
+  --equivalence-threshold-rel-l2 1e-3 \
+  --equivalence-max-files 1 \
+  --output-json /tmp/roformer_fast_norm_compare.json \
+  --output-markdown /tmp/roformer_fast_norm_compare.md
+```

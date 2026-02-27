@@ -232,8 +232,17 @@ class L2Norm(nn.Module):
         self.eps = eps
         self.scale = dim ** 0.5
         self.weight = mx.ones((dim,))
+        self.use_fast_norm = str(os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_FAST_NORM", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     def __call__(self, x):
+        if self.use_fast_norm:
+            # Equivalent to L2 normalization with sqrt(dim) scaling.
+            return mx.fast.rms_norm(x, self.weight, self.eps) * self.scale
         norm = mx.sqrt(mx.sum(x * x, axis=-1, keepdims=True))
         denom = mx.maximum(norm, self.eps)
         return (x / denom) * self.scale * self.weight

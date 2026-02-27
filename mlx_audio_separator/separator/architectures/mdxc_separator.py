@@ -36,6 +36,9 @@ class MDXCSeparator(CommonSeparator):
         self.experimental_vectorized_chunking = bool(
             self.performance_params.get("experimental_vectorized_chunking", False)
         )
+        self.experimental_roformer_fast_norm = bool(
+            self.performance_params.get("experimental_roformer_fast_norm", False)
+        )
         self.experimental_compile_model_forward = bool(
             self.performance_params.get("experimental_compile_model_forward", False)
         )
@@ -59,6 +62,13 @@ class MDXCSeparator(CommonSeparator):
     def _load_model(self):
         """Load MDXC model (Roformer or MDX23C) using MLX."""
         from mlx_audio_separator.separator.models.mdxc.loader import load_mdxc_model
+
+        # Controls L2Norm implementation in Roformer model construction.
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_FAST_NORM"] = (
+            "1" if self.experimental_roformer_fast_norm else "0"
+        )
+        if self.experimental_roformer_fast_norm:
+            self.logger.info("Enabled experimental Roformer fast norm path (mx.fast.rms_norm).")
 
         self.logger.debug("Loading MDXC model with MLX...")
         self.model_run, self.model_type = load_mdxc_model(

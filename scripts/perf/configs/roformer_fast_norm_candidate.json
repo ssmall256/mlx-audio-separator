@@ -1,0 +1,16 @@
+{
+  "models": [
+    "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+    "mel_band_roformer_instrumental_instv7n_gabox.ckpt"
+  ],
+  "warmup": 1,
+  "repeats": 2,
+  "separator": {
+    "output_format": "WAV",
+    "performance_params": {
+      "speed_mode": "latency_safe",
+      "cache_clear_policy": "deferred",
+      "experimental_roformer_fast_norm": true
+    }
+  }
+}
