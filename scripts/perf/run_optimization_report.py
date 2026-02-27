@@ -1089,7 +1089,7 @@ def main():
             _cleanup_dir(run_temp)
 
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_json = Path(args.output_json) if args.output_json else Path(f"/Users/sam/Code/mlx-audio-separator/perf_reports/optimization_report_{now}.json")
+    output_json = Path(args.output_json) if args.output_json else (Path("perf_reports") / f"optimization_report_{now}.json")
     output_md = Path(args.output_markdown) if args.output_markdown else output_json.with_suffix(".md")
 
     python_mps_parity_pass = True

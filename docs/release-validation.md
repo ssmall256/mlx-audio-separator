@@ -43,15 +43,15 @@ Median speedup across the 4-model overlap set: **`1.847x`**.
 
 Primary artifacts used for this snapshot:
 
-1. `/Users/sam/Downloads/release_gate_summary-20260224.json`
-2. `/Users/sam/Downloads/mlx_vs_pas_abba_12.json`
-3. `/Users/sam/Downloads/mlx_vs_pas_abba_12.md`
-4. `/Users/sam/Documents/release-run-20260225-230249/mlx_vs_pas_parity_smoke.json` (parity smoke source run)
+1. `release_gate_summary-20260224.json`
+2. `mlx_vs_pas_abba_12.json`
+3. `mlx_vs_pas_abba_12.md`
+4. `mlx_vs_pas_parity_smoke.json` (parity smoke source run)
 
 Supplemental context:
 
-1. `/Users/sam/Downloads/optimization_report.json`
-2. `/Users/sam/Downloads/optimization_report.md`
+1. `optimization_report.json`
+2. `optimization_report.md`
 
 Snapshot timeline:
 

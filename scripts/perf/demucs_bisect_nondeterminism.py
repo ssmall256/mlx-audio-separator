@@ -491,9 +491,7 @@ def main():
     }
 
     now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_json = Path(args.output_json) if args.output_json else Path(
-        f"/Users/sam/Code/mlx-audio-separator/perf_reports/demucs_bisect_{now}.json"
-    )
+    output_json = Path(args.output_json) if args.output_json else (Path("perf_reports") / f"demucs_bisect_{now}.json")
     output_md = Path(args.output_markdown) if args.output_markdown else output_json.with_suffix(".md")
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
