@@ -8,6 +8,8 @@ from .mlx_registry import MLX_MODEL_REGISTRY
 
 
 class Separator:
+    _UNSET = object()
+
     def __init__(
         self,
         model: str = "htdemucs",
@@ -19,6 +21,7 @@ class Separator:
         jobs: int = 0,
         progress: bool = False,
         batch_size: int = 8,
+        seed: tp.Optional[int] = None,
         callback: tp.Optional[tp.Callable[[dict], None]] = None,
         callback_arg: tp.Optional[dict] = None,
     ):
@@ -39,12 +42,15 @@ class Separator:
             raise ValueError("segment must be > 0 when provided.")
         if int(batch_size) <= 0:
             raise ValueError("batch_size must be > 0.")
+        if seed is not None:
+            seed = int(seed)
         self.model_name = model
         self.shifts = int(shifts)
         self.overlap = float(overlap)
         self.split = split
         self.segment = float(segment) if segment is not None else None
         self.batch_size = int(batch_size)
+        self.seed = seed
         self.jobs = jobs
         self.progress = progress
         self.callback = callback
@@ -75,6 +81,7 @@ class Separator:
         split: tp.Optional[bool] = None,
         segment: tp.Optional[float] = None,
         progress: tp.Optional[bool] = None,
+        seed: tp.Union[object, int, None] = _UNSET,
     ) -> None:
         if shifts is not None:
             if int(shifts) < 0:
@@ -94,6 +101,8 @@ class Separator:
             self.segment = seg_f
         if progress is not None:
             self.progress = progress
+        if seed is not self._UNSET:
+            self.seed = None if seed is None else int(seed)
 
     def _prepare_wav(self, wav):  # -> np.ndarray
         import numpy as np
@@ -160,6 +169,7 @@ class Separator:
             segment=self.segment,
             progress=self.progress,
             batch_size=self.batch_size,
+            seed=self.seed,
         )
         mx.eval(estimates)
         stems_mx = estimates[0]

@@ -216,3 +216,36 @@ def test_cli_warns_when_inactive_compat_flags_supplied(monkeypatch, tmp_path, ca
         "accepted for compatibility; currently inactive by policy" in rec.message
         for rec in caplog.records
     )
+
+
+def test_cli_demucs_seed_propagation(monkeypatch, tmp_path):
+    import mlx_audio_separator.utils.cli as cli
+
+    input_wav = tmp_path / "in.wav"
+    input_wav.write_bytes(b"fake")
+    captured = {}
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def load_model(self, model_filename):
+            captured["model_filename"] = model_filename
+
+        def separate(self, audio_files, custom_output_names=None):
+            return []
+
+    monkeypatch.setattr("mlx_audio_separator.core.Separator", FakeSeparator)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mlx-audio-separator",
+            str(input_wav),
+            "--demucs_seed",
+            "123",
+        ],
+    )
+
+    cli.main()
+
+    assert captured["demucs_params"]["seed"] == 123

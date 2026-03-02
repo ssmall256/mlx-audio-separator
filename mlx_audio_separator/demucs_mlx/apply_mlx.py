@@ -84,7 +84,12 @@ def apply_model(
     num_workers: int = 0,
     segment: tp.Optional[float] = None,
     batch_size: int = 8,
+    seed: tp.Optional[int] = None,
+    _rng: tp.Optional[random.Random] = None,
 ):
+    if _rng is None:
+        _rng = random if seed is None else random.Random(int(seed))
+
     progress_enabled = bool(progress)
     if num_workers > 0:
         warnings.warn("num_workers > 0 ignored on MLX.", RuntimeWarning)
@@ -100,7 +105,7 @@ def apply_model(
         for sub_model, model_weights in zip(model.models, model.weights):
             res = apply_model(
                 sub_model, mix, shifts, split, overlap, transition_power,
-                progress, num_workers, segment, batch_size
+                progress, num_workers, segment, batch_size, seed, _rng
             )
             out = mx.array(res)
 
@@ -142,11 +147,11 @@ def apply_model(
         padded_mix = mix_chunk.padded(length + 2 * max_shift)
         out = 0.0
         for _ in range(shifts):
-            offset = random.randint(0, max_shift)
+            offset = _rng.randint(0, max_shift)
             shifted = TensorChunk(padded_mix, offset, length + max_shift - offset)
             shifted_out = apply_model(
                 model, shifted, 0, split, overlap, transition_power,
-                False, num_workers, segment, batch_size
+                False, num_workers, segment, batch_size, seed, _rng
             )
             out = out + shifted_out[..., max_shift - offset:]
         out = out / shifts

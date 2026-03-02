@@ -25,10 +25,11 @@ class DemucsSeparator(CommonSeparator):
         self.overlap = arch_config.get("overlap", 0.25)
         self.segments_enabled = arch_config.get("segments_enabled", True)
         self.batch_size = int(arch_config.get("batch_size", 8))
+        self.seed = arch_config.get("seed")
 
         self.logger.debug(
             f"Demucs params: segment_size={self.segment_size}, shifts={self.shifts}, "
-            f"overlap={self.overlap}, batch_size={self.batch_size}"
+            f"overlap={self.overlap}, batch_size={self.batch_size}, seed={self.seed}"
         )
 
         # Determine demucs model name from the YAML model data
@@ -52,6 +53,7 @@ class DemucsSeparator(CommonSeparator):
             split=self.segments_enabled,
             segment=segment,
             batch_size=self.batch_size,
+            seed=self.seed,
             progress=self.log_level <= 10,  # Show progress for DEBUG level
         )
 

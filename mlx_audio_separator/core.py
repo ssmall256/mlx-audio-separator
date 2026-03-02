@@ -52,6 +52,7 @@ class Separator:
         overlap: 0.25
         segments_enabled: True
         batch_size: 8
+        seed: None
 
     MDXC Architecture Specific Attributes & Defaults:
         segment_size: 256
@@ -175,7 +176,7 @@ class Separator:
 
         if demucs_params is None:
             demucs_params = {
-                "segment_size": "Default", "shifts": 2, "overlap": 0.25, "segments_enabled": True, "batch_size": 8,
+                "segment_size": "Default", "shifts": 2, "overlap": 0.25, "segments_enabled": True, "batch_size": 8, "seed": None,
             }
         if mdxc_params is None:
             mdxc_params = {

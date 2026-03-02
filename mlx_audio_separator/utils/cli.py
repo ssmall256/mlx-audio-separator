@@ -118,6 +118,12 @@ def main():
     demucs_params = parser.add_argument_group("Demucs Architecture Parameters")
     demucs_params.add_argument("--demucs_segment_size", type=str, default="Default", help="Segment size (default: %(default)s).")
     demucs_params.add_argument("--demucs_shifts", type=int, default=2, help="Number of random shifts (default: %(default)s).")
+    demucs_params.add_argument(
+        "--demucs_seed",
+        type=int,
+        default=None,
+        help="Optional seed for deterministic Demucs shift offsets (default: %(default)s).",
+    )
     demucs_params.add_argument("--demucs_overlap", type=float, default=0.25, help="Overlap ratio (default: %(default)s).")
     demucs_params.add_argument("--demucs_batch_size", type=int, default=8, help="Batch size (default: %(default)s).")
     demucs_params.add_argument(
@@ -251,6 +257,7 @@ def main():
         demucs_params={
             "segment_size": args.demucs_segment_size,
             "shifts": args.demucs_shifts,
+            "seed": args.demucs_seed,
             "overlap": args.demucs_overlap,
             "batch_size": args.demucs_batch_size,
             "segments_enabled": args.demucs_segments_enabled,
