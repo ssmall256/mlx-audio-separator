@@ -53,6 +53,45 @@ def test_write_audio_writes_near_silent_stem(tmp_path, monkeypatch):
     assert out_path.stat().st_size > 0
 
 
+def test_write_audio_flac_fast_write_requests_backend_mode(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_save(path, stem_source, sample_rate, encoding="pcm16", bitrate="auto", flac_compression="default"):
+        captured["flac_compression"] = flac_compression
+        Path(path).write_bytes(b"fLaC")
+
+    monkeypatch.setattr("mlx_audio_separator.separator.common_separator.mac.save", fake_save)
+
+    separator = _make_separator(tmp_path, "BS-Roformer-SW")
+    separator.output_format = "FLAC"
+    separator.experimental_flac_fast_write = True
+    stem_source = np.zeros((512, 2), dtype=np.float32)
+
+    separator.write_audio("track_(Vocals)_BS-Roformer-SW.flac", stem_source)
+
+    assert captured["flac_compression"] == "fast"
+
+
+def test_write_audio_flac_fast_write_falls_back_when_backend_missing_kw(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    def fake_save(path, stem_source, sample_rate, encoding="pcm16", bitrate="auto"):
+        calls["count"] += 1
+        Path(path).write_bytes(b"fLaC")
+
+    monkeypatch.setattr("mlx_audio_separator.separator.common_separator.mac.save", fake_save)
+
+    separator = _make_separator(tmp_path, "BS-Roformer-SW")
+    separator.output_format = "FLAC"
+    separator.experimental_flac_fast_write = True
+    stem_source = np.zeros((512, 2), dtype=np.float32)
+
+    separator.write_audio("track_(Vocals)_BS-Roformer-SW.flac", stem_source)
+
+    # First attempt with flac_compression raises TypeError; fallback retry succeeds.
+    assert calls["count"] == 1
+
+
 @pytest.mark.parametrize(
     ("model_name", "stems"),
     [

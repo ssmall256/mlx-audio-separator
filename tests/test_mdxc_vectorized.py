@@ -86,6 +86,47 @@ def test_vectorized_overlap_add_multi_stem_sign_split(monkeypatch):
     np.testing.assert_allclose(out[1], -mix, rtol=1e-5, atol=1e-5)
 
 
+
+
+def test_vectorized_overlap_add_identity_single_stem_with_fused_path(monkeypatch):
+    monkeypatch.setattr(mdxc_mod, "tqdm", lambda it, **kwargs: it)
+
+    rng = np.random.default_rng(5)
+    mix = rng.standard_normal((2, 301), dtype=np.float32)
+    chunk_size = 80
+    step = 45
+    starts = mdxc_mod.MDXCSeparator._chunk_starts(mix.shape[1], chunk_size, step)
+    window = np.hamming(chunk_size).astype(np.float32)
+
+    def model_run(batch):
+        return mx.expand_dims(batch, axis=1)
+
+    sep = _make_separator(model_run=model_run, batch_size=3)
+    sep.experimental_roformer_fused_overlap_add = True
+
+    out = sep._run_chunked_model_vectorized(
+        mix_mx=mx.array(mix),
+        starts=starts,
+        chunk_size=chunk_size,
+        window_mx=mx.array(window),
+        num_stems=1,
+    )
+
+    assert out.shape == (1, 2, mix.shape[1])
+    np.testing.assert_allclose(out[0], mix, rtol=1e-5, atol=1e-5)
+
+
+def test_run_model_callable_stream_pipeline(monkeypatch):
+    sep = mdxc_mod.MDXCSeparator.__new__(mdxc_mod.MDXCSeparator)
+    sep.experimental_mlx_stream_pipeline = True
+    sep._pipeline_stream = mx.new_stream(mx.default_device())
+
+    batch = mx.ones((2, 2, 8), dtype=mx.float32)
+    out = sep._run_model_callable(lambda x: x, batch)
+
+    assert out.shape == (2, 1, 2, 8)
+
+
 def test_fixed_compiled_batch_tail_padding_masks_extra_slots():
     rng = np.random.default_rng(2)
     mix = rng.standard_normal((2, 120), dtype=np.float32)
@@ -249,6 +290,36 @@ def test_demix_static_path_forces_shaped_compile(monkeypatch):
     assert captured.get("shapeless_override") is False
 
 
+def test_short_audio_override_is_per_run_only():
+    sep = mdxc_mod.MDXCSeparator.__new__(mdxc_mod.MDXCSeparator)
+    sep.logger = _NoopLogger()
+    sep.sample_rate = 44100
+    sep.normalization_threshold = 0.9
+    sep.amplification_threshold = 0.0
+    sep.output_single_stem = None
+    sep.output_dir = "/tmp"
+    sep.override_model_segment_size = False
+    sep.primary_stem_name = "Vocals"
+    sep.reset_perf_metrics = lambda: None
+    sep.add_perf_time = lambda *args, **kwargs: None
+    sep.prepare_mix = lambda _: np.zeros((2, 8 * sep.sample_rate), dtype=np.float32)
+    sep.get_stem_output_path = lambda stem, _: f"track_({stem}).wav"
+    sep.write_audio = lambda path, data: None
+
+    seen = {}
+
+    def fake_demix(mix, override_model_segment_size=None):
+        seen["override_model_segment_size"] = override_model_segment_size
+        return np.zeros((2, mix.shape[1]), dtype=np.float32)
+
+    sep._demix_mlx = fake_demix
+
+    sep.separate("/tmp/short.wav")
+
+    assert seen["override_model_segment_size"] is True
+    assert sep.override_model_segment_size is False
+
+
 def test_separate_writes_complementary_secondary_for_single_target_model():
     sep = mdxc_mod.MDXCSeparator.__new__(mdxc_mod.MDXCSeparator)
     sep.logger = _NoopLogger()
@@ -264,7 +335,7 @@ def test_separate_writes_complementary_secondary_for_single_target_model():
     sep.reset_perf_metrics = lambda: None
     sep.add_perf_time = lambda *args, **kwargs: None
     sep.prepare_mix = lambda _: np.zeros((2, 32), dtype=np.float32)
-    sep._demix_mlx = lambda _: {
+    sep._demix_mlx = lambda _, **__: {
         "Vocals": np.zeros((2, 32), dtype=np.float32),
         "Instrumental": np.zeros((2, 32), dtype=np.float32),
     }

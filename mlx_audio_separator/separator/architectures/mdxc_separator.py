@@ -9,6 +9,7 @@ import numpy as np
 from tqdm import tqdm
 
 from mlx_audio_separator.separator.common_separator import CommonSeparator, match_array_shapes, normalize
+from mlx_audio_separator.separator.models.roformer.overlap_add_kernels import OverlapAddFusionCache
 
 
 class MDXCSeparator(CommonSeparator):
@@ -39,6 +40,21 @@ class MDXCSeparator(CommonSeparator):
         self.experimental_roformer_fast_norm = bool(
             self.performance_params.get("experimental_roformer_fast_norm", False)
         )
+        self.experimental_roformer_grouped_band_split = bool(
+            self.performance_params.get("experimental_roformer_grouped_band_split", False)
+        )
+        self.experimental_roformer_grouped_mask_estimator = bool(
+            self.performance_params.get("experimental_roformer_grouped_mask_estimator", False)
+        )
+        self.experimental_roformer_fused_overlap_add = bool(
+            self.performance_params.get("experimental_roformer_fused_overlap_add", False)
+        )
+        self.experimental_mlx_stream_pipeline = bool(
+            self.performance_params.get("experimental_mlx_stream_pipeline", False)
+        )
+        self.experimental_roformer_compile_fullgraph = bool(
+            self.performance_params.get("experimental_roformer_compile_fullgraph", False)
+        )
         self.experimental_compile_model_forward = bool(
             self.performance_params.get("experimental_compile_model_forward", False)
         )
@@ -53,6 +69,14 @@ class MDXCSeparator(CommonSeparator):
         self._compiled_demix_fn_cache = {}
         self._compiled_demix_shapeless_disabled = set()
         self._logged_static_shapeless_disable = False
+        self._overlap_add_fusion_cache = OverlapAddFusionCache()
+        self._pipeline_stream = None
+        if self.experimental_mlx_stream_pipeline:
+            try:
+                self._pipeline_stream = mx.new_stream(mx.default_device())
+            except Exception as exc:
+                self.logger.warning("Failed to create MLX stream pipeline; falling back to default stream: %s", exc)
+                self.experimental_mlx_stream_pipeline = False
 
         # Load model
         self._load_model()
@@ -66,6 +90,15 @@ class MDXCSeparator(CommonSeparator):
         # Controls L2Norm implementation in Roformer model construction.
         os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_FAST_NORM"] = (
             "1" if self.experimental_roformer_fast_norm else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_BAND_SPLIT"] = (
+            "1" if getattr(self, "experimental_roformer_grouped_band_split", False) else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_MASK_ESTIMATOR"] = (
+            "1" if getattr(self, "experimental_roformer_grouped_mask_estimator", False) else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_COMPILE_FULLGRAPH"] = (
+            "1" if getattr(self, "experimental_roformer_compile_fullgraph", False) else "0"
         )
         if self.experimental_roformer_fast_norm:
             self.logger.info("Enabled experimental Roformer fast norm path (mx.fast.rms_norm).")
@@ -109,6 +142,24 @@ class MDXCSeparator(CommonSeparator):
                 self.logger.warning("MLX compile() unavailable; experimental compiled MDXC forward path disabled.")
         self.logger.info(f"Loaded {self.model_type} model with MLX")
 
+    def _run_model_callable(self, run_fn, batch):
+        use_pipeline = bool(getattr(self, "experimental_mlx_stream_pipeline", False))
+        stream = getattr(self, "_pipeline_stream", None)
+        if use_pipeline and stream is not None:
+            with mx.stream(stream):
+                out = run_fn(batch)
+                if out.ndim == 3:
+                    out = mx.expand_dims(out, axis=1)
+                mx.eval(out)
+            mx.synchronize(stream)
+            return out
+
+        out = run_fn(batch)
+        if out.ndim == 3:
+            out = mx.expand_dims(out, axis=1)
+        mx.eval(out)
+        return out
+
     def _run_fixed_compiled_batch(self, mix_mx, starts, start_idx, current_batch_size, chunk_size, arange_chunk):
         starts_batch = starts[start_idx : start_idx + current_batch_size]
         if not starts_batch:
@@ -127,10 +178,7 @@ class MDXCSeparator(CommonSeparator):
             valid_mask[:current_batch_size] = 1.0
             batch = batch * mx.array(valid_mask, dtype=mx.float32)
 
-        x = self._compiled_model_run(batch)
-        if x.ndim == 3:
-            x = mx.expand_dims(x, axis=1)
-        mx.eval(x)
+        x = self._run_model_callable(self._compiled_model_run, batch)
         return x, starts_batch
 
     def _run_roformer_static_compiled_demix(
@@ -240,13 +288,14 @@ class MDXCSeparator(CommonSeparator):
         mix = self.prepare_mix(self.audio_file_path)
         self.add_perf_time("decode_s", time.perf_counter() - t0)
 
-        # Auto-enable segment size override for short audio
+        # Auto-enable segment size override for short audio for this run only.
+        effective_override_model_segment_size = bool(self.override_model_segment_size)
         audio_duration_seconds = mix.shape[1] / self.sample_rate
-        if audio_duration_seconds < 10.0 and not self.override_model_segment_size:
-            self.override_model_segment_size = True
+        if audio_duration_seconds < 10.0 and not effective_override_model_segment_size:
+            effective_override_model_segment_size = True
             self.logger.warning(
                 f"Audio duration ({audio_duration_seconds:.2f}s) < 10s, "
-                "auto-enabling override_model_segment_size"
+                "auto-enabling override_model_segment_size for this run"
             )
 
         self.logger.debug("Normalizing mix before demixing...")
@@ -255,7 +304,10 @@ class MDXCSeparator(CommonSeparator):
         self.add_perf_time("preprocess_s", time.perf_counter() - t0)
 
         t0 = time.perf_counter()
-        source = self._demix_mlx(mix)
+        source = self._demix_mlx(
+            mix,
+            override_model_segment_size=effective_override_model_segment_size,
+        )
         self.add_perf_time("inference_s", time.perf_counter() - t0)
         self.logger.debug("Demixing completed.")
 
@@ -333,12 +385,14 @@ class MDXCSeparator(CommonSeparator):
             getattr(self, "_fixed_batch_compiled_forward", False)
             and getattr(self, "_compiled_model_run", None) is not None
         )
+        overlap_add_cache = getattr(self, "_overlap_add_fusion_cache", None) or OverlapAddFusionCache()
 
         result_mx = mx.zeros((num_stems, channels, total_samples), dtype=mx.float32)
         counter_mx = mx.zeros((total_samples,), dtype=mx.float32)
 
         eval_flush_interval = max(8, batch_size * 2)
         pending_updates = 0
+        use_fused_ola = bool(getattr(self, "experimental_roformer_fused_overlap_add", False))
 
         for start_idx in tqdm(range(0, len(starts), batch_size), desc="MLX inference (vectorized)"):
             current_batch_size = min(batch_size, len(starts) - start_idx)
@@ -366,10 +420,7 @@ class MDXCSeparator(CommonSeparator):
                 gather_idx = starts_mx[:, None] + arange_chunk[None, :]
                 batch = mx.transpose(mix_mx[:, gather_idx], (1, 0, 2))
 
-                out_mx = self.model_run(batch)
-                if out_mx.ndim == 3:
-                    out_mx = mx.expand_dims(out_mx, axis=1)
-                mx.eval(out_mx)
+                out_mx = self._run_model_callable(self.model_run, batch)
 
             safe_len = min(int(chunk_size), int(out_mx.shape[-1]), int(window_mx.shape[0]))
             if safe_len <= 0:
@@ -381,12 +432,16 @@ class MDXCSeparator(CommonSeparator):
             span_end = int(starts_batch[-1]) + safe_len
             span_len = span_end - span_start
 
-            span_result = mx.zeros((num_stems, channels, span_len), dtype=mx.float32)
-            span_counter = mx.zeros((span_len,), dtype=mx.float32)
-            for local_idx, write_start in enumerate(starts_batch):
-                rel_start = int(write_start) - span_start
-                span_result = span_result.at[:, :, rel_start : rel_start + safe_len].add(weighted[local_idx])
-                span_counter = span_counter.at[rel_start : rel_start + safe_len].add(window_safe)
+            span_result, span_counter = overlap_add_cache.accumulate_span(
+                weighted=weighted,
+                starts_batch=starts_batch,
+                span_start=span_start,
+                safe_len=safe_len,
+                window_safe=window_safe,
+                num_stems=num_stems,
+                channels=channels,
+                use_compiled=use_fused_ola,
+            )
 
             result_mx = result_mx.at[:, :, span_start:span_end].add(span_result)
             counter_mx = counter_mx.at[span_start:span_end].add(span_counter)
@@ -401,11 +456,12 @@ class MDXCSeparator(CommonSeparator):
         mx.eval(out)
         return np.array(out, dtype=np.float32, copy=False)
 
-    def _demix_mlx(self, mix: np.ndarray) -> dict:
+    def _demix_mlx(self, mix: np.ndarray, override_model_segment_size: bool | None = None) -> dict:
         """Demix using MLX-accelerated Roformer inference with chunked overlap-add.
 
         Args:
             mix: Input audio, shape (channels, samples)
+            override_model_segment_size: Optional per-run override flag.
 
         Returns:
             Dictionary of separated stems
@@ -422,7 +478,12 @@ class MDXCSeparator(CommonSeparator):
         target_instrument = training.get("target_instrument")
         instruments = training.get("instruments", [])
 
-        if self.override_model_segment_size:
+        if override_model_segment_size is None:
+            effective_override_model_segment_size = bool(self.override_model_segment_size)
+        else:
+            effective_override_model_segment_size = bool(override_model_segment_size)
+
+        if effective_override_model_segment_size:
             mdx_segment_size = self.segment_size
         else:
             mdx_segment_size = inference.get("dim_t", self.segment_size)
@@ -542,6 +603,7 @@ class MDXCSeparator(CommonSeparator):
                     nonlocal result, counter, pending_updates
                     if current_batch_size <= 0:
                         return
+                    overlap_add_cache = getattr(self, "_overlap_add_fusion_cache", None) or OverlapAddFusionCache()
 
                     if self._fixed_batch_compiled_forward and self._compiled_model_run is not None:
                         x, starts_batch = self._run_fixed_compiled_batch(
@@ -559,19 +621,30 @@ class MDXCSeparator(CommonSeparator):
                             for write_start in starts_batch
                         ]
                         batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
-                        x = model_run(batch)
-                        if x.ndim == 3:
-                            x = mx.expand_dims(x, axis=1)
-                        mx.eval(x)
+                        x = self._run_model_callable(model_run, batch)
 
-                    for batch_idx, write_start in enumerate(starts_batch):
-                        out = x[batch_idx]
-                        safe_len = min(chunk_size, out.shape[-1], window_mx.shape[0])
-                        if safe_len > 0:
-                            weighted_chunk = out[..., :safe_len] * window_mx[:safe_len]
-                            result = result.at[..., write_start : write_start + safe_len].add(weighted_chunk)
-                            counter = counter.at[..., write_start : write_start + safe_len].add(window_mx[:safe_len])
-                            pending_updates += 1
+                    if not starts_batch:
+                        return
+
+                    safe_len = min(chunk_size, int(x.shape[-1]), int(window_mx.shape[0]))
+                    if safe_len > 0:
+                        window_safe = window_mx[:safe_len]
+                        weighted = x[..., :safe_len] * window_safe[None, None, None, :]
+                        span_start = int(starts_batch[0])
+                        span_end = int(starts_batch[-1]) + int(safe_len)
+                        span_result, span_counter = overlap_add_cache.accumulate_span(
+                            weighted=weighted,
+                            starts_batch=starts_batch,
+                            span_start=span_start,
+                            safe_len=safe_len,
+                            window_safe=window_safe,
+                            num_stems=num_stems,
+                            channels=int(mix.shape[0]),
+                            use_compiled=bool(getattr(self, "experimental_roformer_fused_overlap_add", False)),
+                        )
+                        result = result.at[..., span_start:span_end].add(span_result)
+                        counter = counter.at[..., span_start:span_end].add(span_counter)
+                        pending_updates += 1
 
                     maybe_eval()
 

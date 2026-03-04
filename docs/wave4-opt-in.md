@@ -7,9 +7,16 @@ Wave 4 is performance work after release stabilization. All new behavior remains
 | Control | Scope | Status | Notes |
 |---|---|---|---|
 | `--speed_mode latency_safe_v2` | Runtime profile | Active (opt-in) | Experimental release profile; defaults unchanged. |
+| `--speed_mode latency_safe_v3` | Runtime profile | Active (opt-in) | FLAC-focused no-drift profile (`deferred` cache clears + `write_workers=2`). |
 | `--auto_tune_batch` | Runtime profile | Active (opt-in) | Per-arch auto-tuning probe path. |
 | `--experimental_vectorized_chunking` | MDXC | Active (opt-in) | Experimental MDXC chunk scheduler path. |
 | `--experimental_roformer_fast_norm` | Roformer (MDXC path) | Active (opt-in) | Uses `mx.fast.rms_norm` in Roformer `L2Norm` blocks. |
+| `--experimental_roformer_grouped_band_split` | Roformer (MDXC path) | Active (opt-in) | Grouped same-width band projection path in Roformer band split. |
+| `--experimental_roformer_grouped_mask_estimator` | Roformer (MDXC path) | Active (opt-in) | Grouped same-width mask-estimator path for per-band MLP blocks. |
+| `--experimental_roformer_fused_overlap_add` | Roformer (MDXC path) | Active (opt-in) | Fused overlap-add accumulation path with Metal-kernel fallback. |
+| `--experimental_mlx_stream_pipeline` | MDXC | Active (opt-in) | MLX stream scheduling path for chunk inference. |
+| `--experimental_roformer_compile_fullgraph` | Roformer (MDXC path) | Active (opt-in) | Shape-keyed full-graph compile cache for Roformer forward model. |
+| `--experimental_flac_fast_write` | All arches (FLAC output) | Active (opt-in) | Requests FLAC fast-write mode when backend support is available. |
 | `--experimental_compile_model_forward` | MDX23C (MDXC path) | Active (opt-in) | Compiled forward path where supported. |
 | `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1` | Demucs fused GroupNorm+GLU | Active (opt-in, env) | Enables multigroup hybrid GN+GLU fast path (`num_groups > 1`) for Demucs experiments. |
 | `--experimental_compile_shapeless` | Roformer compile path | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
@@ -81,6 +88,11 @@ A Wave 4 feature can move from opt-in to default only after:
 1. Two clean benchmark passes on at least two Apple Silicon machines.
 2. Equivalence/quality gates pass for affected architectures.
 3. Release-readiness gate remains green (`0` failures).
+
+## BS-Roformer-SW Candidate Corpus Manifests
+
+- Quick gate corpus template: `scripts/perf/corpora/bs_roformer_sw_quick.txt` (3 files).
+- Full gate corpus template: `scripts/perf/corpora/bs_roformer_sw_full.txt` (12 files).
 
 ## Roformer Fast-Norm Evaluation
 

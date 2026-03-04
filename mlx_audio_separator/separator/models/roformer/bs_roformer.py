@@ -18,6 +18,7 @@ PyTorch implementation: bs_roformer.py
 
 import math
 import os
+from collections import defaultdict
 from typing import List, Optional, Tuple
 
 import mlx.core as mx
@@ -32,6 +33,27 @@ def exists(val):
 
 def default(v, d):
     return v if exists(v) else d
+
+
+def env_enabled(name: str, default_value: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default_value)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def batched_group_linear(x_group: mx.array, weights: mx.array, biases: mx.array | None = None) -> mx.array:
+    """Apply per-group linear layers in a single batched matmul.
+
+    Args:
+        x_group: Shape (B, T, G, In)
+        weights: Shape (G, Out, In)
+        biases: Optional shape (G, Out)
+    """
+    out = mx.einsum("btgi,goi->btgo", x_group, weights)
+    if biases is not None:
+        out = out + biases[None, None, :, :]
+    return out
 
 
 # Use MLX's built-in nn.Sequential, which stores layers in self.layers list
@@ -485,23 +507,70 @@ class BandSplit(nn.Module):
     Band-split module that splits frequency bins into bands and projects to feature dimension.
     """
 
-    def __init__(self, dim, dim_inputs: Tuple[int, ...]):
+    def __init__(self, dim, dim_inputs: Tuple[int, ...], use_grouped: bool = False):
         super().__init__()
         self.dim_inputs = dim_inputs
         self.num_bands = len(dim_inputs)
         self.split_points = np.cumsum(self.dim_inputs)[:-1].tolist()
+        self.use_grouped = bool(use_grouped)
+        self._band_module_names: list[str] = []
+        grouped: dict[int, list[int]] = defaultdict(list)
 
         # Store as individual attributes for proper MLX registration
         for i, dim_in in enumerate(dim_inputs):
-            setattr(self, f'to_features_{i}', BandSplitModule(dim_in, dim))
+            module_name = f"to_features_{i}"
+            setattr(self, module_name, BandSplitModule(dim_in, dim))
+            self._band_module_names.append(module_name)
+            grouped[int(dim_in)].append(i)
+        self._grouped_band_indices = tuple((dim_in, tuple(indices)) for dim_in, indices in grouped.items())
+
+    def _forward_grouped(self, splits: list[mx.array]) -> mx.array:
+        outs: list[mx.array | None] = [None] * self.num_bands
+
+        for _, band_indices in self._grouped_band_indices:
+            if len(band_indices) <= 1:
+                band_idx = int(band_indices[0])
+                to_feature = getattr(self, self._band_module_names[band_idx])
+                outs[band_idx] = to_feature(splits[band_idx])
+                continue
+
+            modules = [getattr(self, self._band_module_names[idx]) for idx in band_indices]
+            grouped_input = mx.stack([splits[idx] for idx in band_indices], axis=2)  # (B, T, G, D)
+
+            # Grouped L2 norm equivalent to L2Norm module math.
+            eps = float(modules[0].norm.eps)
+            scale = float(modules[0].norm.scale)
+            norm = mx.sqrt(mx.sum(grouped_input * grouped_input, axis=-1, keepdims=True))
+            denom = mx.maximum(norm, eps)
+            normalized = (grouped_input / denom) * scale
+            norm_weights = mx.stack([module.norm.weight for module in modules], axis=0)
+            normalized = normalized * norm_weights[None, None, :, :]
+
+            linear_weights = mx.stack([module.linear.weight for module in modules], axis=0)
+            biases = []
+            has_bias = True
+            for module in modules:
+                bias = getattr(module.linear, "bias", None)
+                if bias is None:
+                    has_bias = False
+                biases.append(bias)
+            linear_bias = mx.stack(biases, axis=0) if has_bias else None
+
+            grouped_out = batched_group_linear(normalized, linear_weights, linear_bias)
+            for local_idx, band_idx in enumerate(band_indices):
+                outs[int(band_idx)] = grouped_out[:, :, local_idx, :]
+
+        return mx.stack([out for out in outs if out is not None], axis=-2)
 
     def __call__(self, x):
         # Split input by frequency bands
         splits = mx.split(x, self.split_points, axis=-1)
+        if self.use_grouped:
+            return self._forward_grouped(splits)
 
         outs = []
         for i, split_input in enumerate(splits):
-            to_feature = getattr(self, f'to_features_{i}')
+            to_feature = getattr(self, self._band_module_names[i])
             split_output = to_feature(split_input)
             outs.append(split_output)
 
@@ -531,23 +600,98 @@ class MaskEstimator(nn.Module):
     Mask estimator that generates frequency masks for each stem.
     """
 
-    def __init__(self, dim, dim_inputs: Tuple[int, ...], depth, mlp_expansion_factor=4):
+    def __init__(self, dim, dim_inputs: Tuple[int, ...], depth, mlp_expansion_factor=4, use_grouped: bool = False):
         super().__init__()
         self.dim_inputs = dim_inputs
         self.num_bands = len(dim_inputs)
+        self.use_grouped = bool(use_grouped)
         dim_hidden = dim * mlp_expansion_factor
+        self._mlp_module_names: list[str] = []
+        grouped: dict[int, list[int]] = defaultdict(list)
 
         # Store as individual attributes for proper MLX registration
         for i, dim_in in enumerate(dim_inputs):
-            setattr(self, f'to_freqs_{i}', MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth))
+            module_name = f"to_freqs_{i}"
+            setattr(self, module_name, MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth))
+            self._mlp_module_names.append(module_name)
+            grouped[int(dim_in)].append(i)
+        self._grouped_band_indices = tuple((dim_in, tuple(indices)) for dim_in, indices in grouped.items())
+
+    @staticmethod
+    def _run_grouped_mlp(grouped_input: mx.array, mlps: list[nn.Module]) -> mx.array | None:
+        if not mlps:
+            return None
+        layer_lists = [getattr(mlp, "layers", None) for mlp in mlps]
+        if any(layers is None for layers in layer_lists):
+            return None
+        depth = len(layer_lists[0])
+        if any(len(layers) != depth for layers in layer_lists):
+            return None
+
+        x = grouped_input
+        for layer_idx in range(depth):
+            proto = layer_lists[0][layer_idx]
+            proto_name = proto.__class__.__name__.lower()
+            if hasattr(proto, "weight"):
+                weights = []
+                biases = []
+                has_bias = True
+                for layers in layer_lists:
+                    layer = layers[layer_idx]
+                    weight = getattr(layer, "weight", None)
+                    if weight is None:
+                        return None
+                    weights.append(weight)
+                    bias = getattr(layer, "bias", None)
+                    if bias is None:
+                        has_bias = False
+                    biases.append(bias)
+                linear_weights = mx.stack(weights, axis=0)
+                linear_bias = mx.stack(biases, axis=0) if has_bias else None
+                x = batched_group_linear(x, linear_weights, linear_bias)
+            elif proto_name == "tanh":
+                x = mx.tanh(x)
+            else:
+                return None
+        return x
 
     def __call__(self, x):
         # Unbind bands
         x_bands = [x[..., i, :] for i in range(x.shape[-2])]
 
+        if self.use_grouped:
+            outs_by_band: list[mx.array | None] = [None] * self.num_bands
+            for _, band_indices in self._grouped_band_indices:
+                if len(band_indices) <= 1:
+                    band_idx = int(band_indices[0])
+                    mlp = getattr(self, self._mlp_module_names[band_idx])
+                    freq_out_before_glu = mlp(x_bands[band_idx])
+                    freq_out = mx.split(freq_out_before_glu, 2, axis=-1)
+                    outs_by_band[band_idx] = freq_out[0] * mx.sigmoid(freq_out[1])
+                    continue
+
+                mlps = [getattr(self, self._mlp_module_names[idx]) for idx in band_indices]
+                grouped_input = mx.stack([x_bands[idx] for idx in band_indices], axis=2)  # (B, T, G, D)
+                grouped_out = self._run_grouped_mlp(grouped_input, mlps)
+                if grouped_out is None:
+                    # Conservative fallback for unsupported mixed module structures.
+                    for band_idx in band_indices:
+                        mlp = getattr(self, self._mlp_module_names[int(band_idx)])
+                        freq_out_before_glu = mlp(x_bands[int(band_idx)])
+                        freq_out = mx.split(freq_out_before_glu, 2, axis=-1)
+                        outs_by_band[int(band_idx)] = freq_out[0] * mx.sigmoid(freq_out[1])
+                    continue
+
+                values, gates = mx.split(grouped_out, 2, axis=-1)
+                grouped_masks = values * mx.sigmoid(gates)
+                for local_idx, band_idx in enumerate(band_indices):
+                    outs_by_band[int(band_idx)] = grouped_masks[:, :, local_idx, :]
+
+            return mx.concatenate([out for out in outs_by_band if out is not None], axis=-1)
+
         outs = []
         for i, band_features in enumerate(x_bands):
-            mlp = getattr(self, f'to_freqs_{i}')
+            mlp = getattr(self, self._mlp_module_names[i])
             freq_out_before_glu = mlp(band_features)
 
             # Apply GLU (Gated Linear Unit)
@@ -656,6 +800,20 @@ class BSRoformerMLX(nn.Module):
         self.chunk_seconds = float(chunk_seconds)
         self.overlap_seconds = float(overlap_seconds)
         self.freqs_per_bands = freqs_per_bands
+        self.experimental_grouped_band_split = env_enabled(
+            "MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_BAND_SPLIT",
+            default_value=False,
+        )
+        self.experimental_grouped_mask_estimator = env_enabled(
+            "MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_MASK_ESTIMATOR",
+            default_value=False,
+        )
+        self.experimental_compile_fullgraph = env_enabled(
+            "MLX_AUDIO_SEPARATOR_ROFORMER_COMPILE_FULLGRAPH",
+            default_value=False,
+        )
+        self._forward_model_compile_cache: dict[tuple[int, ...], object] = {}
+        self._forward_model_compile_disabled: set[tuple[int, ...]] = set()
 
         # Verify frequency bands sum to expected number
         expected_freqs = stft_n_fft // 2 + 1
@@ -698,7 +856,11 @@ class BSRoformerMLX(nn.Module):
 
         # Band split with complex representation (2x for real/imag, stereo channels)
         freqs_per_bands_with_complex = tuple(2 * f * self.audio_channels for f in freqs_per_bands)
-        self.band_split = BandSplit(dim=dim, dim_inputs=freqs_per_bands_with_complex)
+        self.band_split = BandSplit(
+            dim=dim,
+            dim_inputs=freqs_per_bands_with_complex,
+            use_grouped=self.experimental_grouped_band_split,
+        )
 
         # Mask estimators (one per stem) - stored as individual attributes
         for i in range(num_stems):
@@ -706,7 +868,8 @@ class BSRoformerMLX(nn.Module):
                 dim=dim,
                 dim_inputs=freqs_per_bands_with_complex,
                 depth=mask_estimator_depth,
-                mlp_expansion_factor=mlp_expansion_factor
+                mlp_expansion_factor=mlp_expansion_factor,
+                use_grouped=self.experimental_grouped_mask_estimator,
             ))
 
         if os.environ.get("MLX_ENABLE_COMPILE") == "1":
@@ -1044,7 +1207,7 @@ class BSRoformerMLX(nn.Module):
         masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
         return masks
 
-    def _forward_model(self, stft_repr):
+    def _forward_model_impl(self, stft_repr):
         """
         Process STFT representation through transformer to generate masks.
 
@@ -1059,6 +1222,40 @@ class BSRoformerMLX(nn.Module):
         x = self.band_split(x)
         x = self._forward_transformers(x)
         return self._estimate_masks(x)
+
+    def _forward_model(self, stft_repr):
+        """Forward-model wrapper with optional shape-keyed full-graph compile cache."""
+        if not self.experimental_compile_fullgraph:
+            return self._forward_model_impl(stft_repr)
+
+        shape_key = tuple(int(v) for v in stft_repr.shape)
+        if shape_key in self._forward_model_compile_disabled:
+            return self._forward_model_impl(stft_repr)
+
+        compiled_fn = self._forward_model_compile_cache.get(shape_key)
+        if compiled_fn is None:
+            compile_fn = getattr(mx, "compile", None)
+            if not callable(compile_fn):
+                self._forward_model_compile_disabled.add(shape_key)
+                return self._forward_model_impl(stft_repr)
+
+            def _compiled_forward(stft_in):
+                return self._forward_model_impl(stft_in)
+
+            try:
+                compiled_fn = compile_fn(_compiled_forward, shapeless=False)
+                self._forward_model_compile_cache[shape_key] = compiled_fn
+            except Exception:
+                self._forward_model_compile_disabled.add(shape_key)
+                return self._forward_model_impl(stft_repr)
+
+        try:
+            return compiled_fn(stft_repr)
+        except Exception:
+            # Keep failures isolated by shape and fall back safely.
+            self._forward_model_compile_disabled.add(shape_key)
+            self._forward_model_compile_cache.pop(shape_key, None)
+            return self._forward_model_impl(stft_repr)
 
 
 def create_compiled_model(*args, **kwargs):

@@ -100,6 +100,7 @@ class CommonSeparator:
         self.performance_params = config.get("performance_params", {}) or {}
         self.cache_clear_policy = self.performance_params.get("cache_clear_policy", "aggressive")
         self.write_workers = int(self.performance_params.get("write_workers", 1))
+        self.experimental_flac_fast_write = bool(self.performance_params.get("experimental_flac_fast_write", False))
         self._write_suppressed = False
         self._writer = None
         self.reset_perf_metrics()
@@ -266,6 +267,7 @@ class CommonSeparator:
             bitrate = self.output_bitrate
         elif file_format == "mp3":
             bitrate = "320k"
+        flac_fast_write = bool(self.experimental_flac_fast_write and file_format == "flac")
 
         try:
             if self.write_workers > 1:
@@ -277,10 +279,22 @@ class CommonSeparator:
                     sample_rate=self.sample_rate,
                     encoding=output_encoding,
                     bitrate=bitrate,
+                    flac_fast_write=flac_fast_write,
                 )
             else:
                 t0 = time.perf_counter()
-                mac.save(str(stem_path), stem_source, self.sample_rate, encoding=output_encoding, bitrate=bitrate)
+                save_kwargs = {
+                    "encoding": output_encoding,
+                    "bitrate": bitrate,
+                }
+                if file_format == "flac":
+                    save_kwargs["flac_compression"] = "fast" if flac_fast_write else "default"
+                try:
+                    mac.save(str(stem_path), stem_source, self.sample_rate, **save_kwargs)
+                except TypeError:
+                    # Backward-compatible fallback for mlx-audio-io versions without flac_compression.
+                    save_kwargs.pop("flac_compression", None)
+                    mac.save(str(stem_path), stem_source, self.sample_rate, **save_kwargs)
                 self.add_perf_time("write_s", time.perf_counter() - t0)
             self.logger.debug(f"Exported audio file successfully to {stem_path}")
         except Exception as e:
