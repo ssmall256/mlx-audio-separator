@@ -1,0 +1,4 @@
+# BS-Roformer-SW quick gate corpus (3 files, 60s each, FLAC 44.1k stereo)
+/tmp/bs_roformer_sw_corpus/quick_01_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/quick_02_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/quick_03_60s_44k_stereo.flac

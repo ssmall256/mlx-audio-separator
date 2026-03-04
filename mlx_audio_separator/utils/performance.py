@@ -22,10 +22,16 @@ DEFAULT_PERFORMANCE_PARAMS = {
     "write_workers": 1,
     "experimental_vectorized_chunking": False,
     "experimental_roformer_fast_norm": False,
+    "experimental_roformer_grouped_band_split": False,
+    "experimental_roformer_grouped_mask_estimator": False,
+    "experimental_roformer_fused_overlap_add": False,
+    "experimental_mlx_stream_pipeline": False,
+    "experimental_roformer_compile_fullgraph": False,
     "experimental_compile_model_forward": False,
     "experimental_vr_device_residency": False,
     "experimental_compile_shapeless": False,
     "experimental_roformer_static_compiled_demix": False,
+    "experimental_flac_fast_write": False,
     "perf_trace": False,
     "perf_trace_path": None,
 }
@@ -38,8 +44,11 @@ def normalize_performance_params(params: dict[str, Any] | None) -> dict[str, Any
         out.update(params)
 
     out["speed_mode"] = str(out["speed_mode"]).strip().lower()
-    if out["speed_mode"] not in {"default", "latency_safe", "latency_safe_v2"}:
-        raise ValueError("performance_params.speed_mode must be one of: default, latency_safe, latency_safe_v2")
+    if out["speed_mode"] not in {"default", "latency_safe", "latency_safe_v2", "latency_safe_v3"}:
+        raise ValueError(
+            "performance_params.speed_mode must be one of: "
+            "default, latency_safe, latency_safe_v2, latency_safe_v3"
+        )
 
     out["cache_clear_policy"] = str(out["cache_clear_policy"]).strip().lower()
     if out["cache_clear_policy"] not in {"aggressive", "deferred"}:
@@ -49,10 +58,16 @@ def normalize_performance_params(params: dict[str, Any] | None) -> dict[str, Any
     out["perf_trace"] = bool(out["perf_trace"])
     out["experimental_vectorized_chunking"] = bool(out["experimental_vectorized_chunking"])
     out["experimental_roformer_fast_norm"] = bool(out["experimental_roformer_fast_norm"])
+    out["experimental_roformer_grouped_band_split"] = bool(out["experimental_roformer_grouped_band_split"])
+    out["experimental_roformer_grouped_mask_estimator"] = bool(out["experimental_roformer_grouped_mask_estimator"])
+    out["experimental_roformer_fused_overlap_add"] = bool(out["experimental_roformer_fused_overlap_add"])
+    out["experimental_mlx_stream_pipeline"] = bool(out["experimental_mlx_stream_pipeline"])
+    out["experimental_roformer_compile_fullgraph"] = bool(out["experimental_roformer_compile_fullgraph"])
     out["experimental_compile_model_forward"] = bool(out["experimental_compile_model_forward"])
     out["experimental_vr_device_residency"] = bool(out["experimental_vr_device_residency"])
     out["experimental_compile_shapeless"] = bool(out["experimental_compile_shapeless"])
     out["experimental_roformer_static_compiled_demix"] = bool(out["experimental_roformer_static_compiled_demix"])
+    out["experimental_flac_fast_write"] = bool(out["experimental_flac_fast_write"])
 
     out["tune_probe_seconds"] = float(out["tune_probe_seconds"])
     if out["tune_probe_seconds"] <= 0:
@@ -153,6 +168,7 @@ class _SaveTask:
     sample_rate: int
     encoding: str
     bitrate: str
+    flac_fast_write: bool = False
 
 
 class AsyncStemWriter:
@@ -186,6 +202,16 @@ class AsyncStemWriter:
                     task.sample_rate,
                     encoding=task.encoding,
                     bitrate=task.bitrate,
+                    flac_compression=("fast" if task.flac_fast_write else "default"),
+                )
+            except TypeError:
+                # Backward-compatible fallback for mlx-audio-io versions without flac_compression.
+                mac.save(
+                    str(task.stem_path),
+                    task.stem_source,
+                    task.sample_rate,
+                    encoding=task.encoding,
+                    bitrate=task.bitrate,
                 )
             except BaseException as exc:
                 self._error = exc
@@ -193,7 +219,15 @@ class AsyncStemWriter:
                 if task is not None:
                     self._queue.task_done()
 
-    def submit(self, stem_path: str, stem_source: np.ndarray, sample_rate: int, encoding: str, bitrate: str):
+    def submit(
+        self,
+        stem_path: str,
+        stem_source: np.ndarray,
+        sample_rate: int,
+        encoding: str,
+        bitrate: str,
+        flac_fast_write: bool = False,
+    ):
         if self._error is not None:
             raise self._error
         task = _SaveTask(
@@ -202,6 +236,7 @@ class AsyncStemWriter:
             sample_rate=int(sample_rate),
             encoding=str(encoding),
             bitrate=str(bitrate),
+            flac_fast_write=bool(flac_fast_write),
         )
         self._queue.put(task)
 

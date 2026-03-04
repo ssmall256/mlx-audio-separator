@@ -1,6 +1,7 @@
 """Tests for the Separator class."""
 
 import logging
+import os
 
 import pytest
 
@@ -132,3 +133,93 @@ class TestSeparatorStrictErrors:
 
         with pytest.raises(RuntimeError, match="inner failure"):
             sep.separate(str(audio))
+
+
+def test_auto_tune_restores_mdxc_runtime_attrs(monkeypatch, tmp_path):
+    import numpy as np
+    import mlx_audio_io as mac
+
+    class _FakeModel:
+        def __init__(self, output_dir):
+            self.output_dir = output_dir
+            self.batch_size = 1
+            self.override_model_segment_size = False
+            self.segment_size = 256
+            self.overlap = 8
+            self.pitch_shift = 0
+            self._write_suppressed = False
+
+        def set_write_suppressed(self, enabled):
+            self._write_suppressed = bool(enabled)
+
+        def separate(self, _):
+            # Simulate a side effect from short probe runs that must be restored.
+            self.override_model_segment_size = True
+            return []
+
+        def flush_pending_writes(self):
+            return None
+
+        def clear_file_specific_paths(self):
+            return None
+
+    sep = Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+    sep.performance_params["auto_tune_batch"] = True
+    sep.performance_params["tune_probe_seconds"] = 2.0
+    sep.model_type = "MDXC"
+    sep.model_name = "BS-Roformer-SW"
+    sep.sample_rate = 44100
+    sep.output_dir = str(tmp_path)
+    sep._tuning_cache = {}
+    sep.model_instance = _FakeModel(output_dir=str(tmp_path))
+
+    monkeypatch.setattr(mac, "info", lambda *_args, **_kwargs: type("Info", (), {"channels": 2})())
+    monkeypatch.setattr(
+        mac,
+        "load",
+        lambda *_args, **_kwargs: (np.zeros((44100 * 3, 2), dtype=np.float32), 44100),
+    )
+    monkeypatch.setattr(mac, "save", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("mlx_audio_separator.core.save_tuning_cache", lambda *_args, **_kwargs: None)
+
+    sep._auto_tune_batch_if_needed(str(tmp_path / "in.wav"))
+
+    assert sep.model_instance.override_model_segment_size is False
+    assert sep.model_instance.segment_size == 256
+    assert sep.model_instance.overlap == 8
+    assert sep.model_instance.pitch_shift == 0
+
+
+def test_load_model_sets_save_safetensors_env_temporarily(monkeypatch, tmp_path):
+    seen = {"during": None}
+
+    class _FakeArchModule:
+        class MDXCSeparator:
+            def __init__(self, common_config, arch_config):
+                seen["during"] = os.environ.get("MLX_SAVE_SAFETENSORS")
+
+    sep = Separator(
+        info_only=True,
+        model_file_dir=str(tmp_path / "models"),
+        save_converted_safetensors=True,
+    )
+
+    monkeypatch.setattr(
+        sep,
+        "download_model_files",
+        lambda model_filename: (
+            model_filename,
+            "MDXC",
+            "fake",
+            str(tmp_path / model_filename),
+            "fake.yaml",
+        ),
+    )
+    monkeypatch.setattr(sep, "load_model_data_from_yaml", lambda *_: {"training": {"instruments": ["Vocals", "Instrumental"]}})
+    monkeypatch.setattr("mlx_audio_separator.core.importlib.import_module", lambda *_: _FakeArchModule)
+
+    os.environ.pop("MLX_SAVE_SAFETENSORS", None)
+    sep.load_model("BS-Roformer-SW.ckpt")
+
+    assert seen["during"] == "1"
+    assert os.environ.get("MLX_SAVE_SAFETENSORS") is None

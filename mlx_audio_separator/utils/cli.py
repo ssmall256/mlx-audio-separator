@@ -57,6 +57,16 @@ def main():
     io_params.add_argument("--output_dir", default=None, help="Output directory (default: current dir).")
     io_params.add_argument("--model_file_dir", default="/tmp/audio-separator-models/", help="Model files directory (default: %(default)s).")
     io_params.add_argument("--download_model_only", action="store_true", help="Download model without performing separation.")
+    io_params.add_argument(
+        "--save_converted_safetensors",
+        action="store_true",
+        help="Save converted Roformer safetensors next to checkpoint when conversion is needed.",
+    )
+    io_params.add_argument(
+        "--preconvert_only",
+        action="store_true",
+        help="Load/convert model (optionally saving safetensors) and exit without separation.",
+    )
 
     common_params = parser.add_argument_group("Common Separation Parameters")
     common_params.add_argument("--invert_spect", action="store_true", help="Invert secondary stem using spectrogram.")
@@ -74,7 +84,7 @@ def main():
     common_params.add_argument("--custom_output_names", type=json.loads, default=None, help='Custom output names in JSON format.')
     common_params.add_argument(
         "--speed_mode",
-        choices=["default", "latency_safe", "latency_safe_v2"],
+        choices=["default", "latency_safe", "latency_safe_v2", "latency_safe_v3"],
         default="default",
         help="Performance speed profile (default: %(default)s).",
     )
@@ -93,6 +103,31 @@ def main():
         help="Enable experimental Roformer fast norm path via mx.fast.rms_norm.",
     )
     common_params.add_argument(
+        "--experimental_roformer_grouped_band_split",
+        action="store_true",
+        help="Enable grouped same-width band projection path in Roformer band split.",
+    )
+    common_params.add_argument(
+        "--experimental_roformer_grouped_mask_estimator",
+        action="store_true",
+        help="Enable grouped same-width Roformer mask-estimator path.",
+    )
+    common_params.add_argument(
+        "--experimental_roformer_fused_overlap_add",
+        action="store_true",
+        help="Enable experimental fused overlap-add accumulation path for Roformer chunks.",
+    )
+    common_params.add_argument(
+        "--experimental_mlx_stream_pipeline",
+        action="store_true",
+        help="Enable experimental MLX stream scheduling for MDXC chunk inference.",
+    )
+    common_params.add_argument(
+        "--experimental_roformer_compile_fullgraph",
+        action="store_true",
+        help="Enable experimental shape-keyed full-graph compile path for Roformer forward model.",
+    )
+    common_params.add_argument(
         "--experimental_compile_model_forward",
         action="store_true",
         help="Enable experimental compiled forward pass for model inference (currently MDX23C path in MDXC).",
@@ -101,6 +136,11 @@ def main():
         "--experimental_vr_device_residency",
         action="store_true",
         help="Enable experimental VR device-resident mask accumulation path.",
+    )
+    common_params.add_argument(
+        "--experimental_flac_fast_write",
+        action="store_true",
+        help="Enable experimental FLAC fast-write mode when backend support is available.",
     )
     common_params.add_argument(
         "--experimental_compile_shapeless",
@@ -234,27 +274,21 @@ def main():
         logger.info(f"Model {args.model_filename} downloaded successfully.")
         sys.exit(0)
 
-    audio_files = list(getattr(args, "audio_files", []))
-    if not audio_files:
-        parser.print_help()
-        sys.exit(1)
-
-    logger.info(f"MLX Audio Separator version {package_version} beginning with input path(s): {', '.join(audio_files)}")
-
-    separator = Separator(
-        log_formatter=log_formatter,
-        log_level=log_level,
-        model_file_dir=args.model_file_dir,
-        output_dir=args.output_dir,
-        output_format=args.output_format,
-        output_bitrate=args.output_bitrate,
-        normalization_threshold=args.normalization,
-        amplification_threshold=args.amplification,
-        output_single_stem=args.single_stem,
-        invert_using_spec=args.invert_spect,
-        sample_rate=args.sample_rate,
-        chunk_duration=args.chunk_duration,
-        demucs_params={
+    separator_kwargs = {
+        "log_formatter": log_formatter,
+        "log_level": log_level,
+        "model_file_dir": args.model_file_dir,
+        "output_dir": args.output_dir,
+        "output_format": args.output_format,
+        "output_bitrate": args.output_bitrate,
+        "normalization_threshold": args.normalization,
+        "amplification_threshold": args.amplification,
+        "output_single_stem": args.single_stem,
+        "invert_using_spec": args.invert_spect,
+        "sample_rate": args.sample_rate,
+        "chunk_duration": args.chunk_duration,
+        "save_converted_safetensors": args.save_converted_safetensors,
+        "demucs_params": {
             "segment_size": args.demucs_segment_size,
             "shifts": args.demucs_shifts,
             "seed": args.demucs_seed,
@@ -262,21 +296,21 @@ def main():
             "batch_size": args.demucs_batch_size,
             "segments_enabled": args.demucs_segments_enabled,
         },
-        mdx_params={
+        "mdx_params": {
             "segment_size": args.mdx_segment_size,
             "overlap": args.mdx_overlap,
             "batch_size": args.mdx_batch_size,
             "hop_length": args.mdx_hop_length,
             "enable_denoise": args.mdx_enable_denoise,
         },
-        mdxc_params={
+        "mdxc_params": {
             "segment_size": args.mdxc_segment_size,
             "batch_size": args.mdxc_batch_size,
             "overlap": args.mdxc_overlap,
             "override_model_segment_size": args.mdxc_override_model_segment_size,
             "pitch_shift": args.mdxc_pitch_shift,
         },
-        vr_params={
+        "vr_params": {
             "batch_size": args.vr_batch_size,
             "window_size": args.vr_window_size,
             "aggression": args.vr_aggression,
@@ -285,7 +319,7 @@ def main():
             "post_process_threshold": args.vr_post_process_threshold,
             "high_end_process": args.vr_high_end_process,
         },
-        performance_params={
+        "performance_params": {
             "speed_mode": args.speed_mode,
             "auto_tune_batch": args.auto_tune_batch,
             "tune_probe_seconds": args.tune_probe_seconds,
@@ -293,14 +327,38 @@ def main():
             "write_workers": args.write_workers,
             "experimental_vectorized_chunking": args.experimental_vectorized_chunking,
             "experimental_roformer_fast_norm": args.experimental_roformer_fast_norm,
+            "experimental_roformer_grouped_band_split": args.experimental_roformer_grouped_band_split,
+            "experimental_roformer_grouped_mask_estimator": args.experimental_roformer_grouped_mask_estimator,
+            "experimental_roformer_fused_overlap_add": args.experimental_roformer_fused_overlap_add,
+            "experimental_mlx_stream_pipeline": args.experimental_mlx_stream_pipeline,
+            "experimental_roformer_compile_fullgraph": args.experimental_roformer_compile_fullgraph,
             "experimental_compile_model_forward": args.experimental_compile_model_forward,
             "experimental_vr_device_residency": args.experimental_vr_device_residency,
             "experimental_compile_shapeless": args.experimental_compile_shapeless,
             "experimental_roformer_static_compiled_demix": args.experimental_roformer_static_compiled_demix,
+            "experimental_flac_fast_write": args.experimental_flac_fast_write,
             "perf_trace": args.perf_trace,
             "perf_trace_path": args.perf_trace_path,
         },
-    )
+    }
+
+    if args.preconvert_only:
+        separator = Separator(**separator_kwargs)
+        separator.load_model(model_filename=args.model_filename)
+        if args.save_converted_safetensors:
+            logger.info(f"Model {args.model_filename} pre-converted and safetensors saved when conversion was required.")
+        else:
+            logger.info(f"Model {args.model_filename} loaded successfully (preconvert-only mode).")
+        sys.exit(0)
+
+    audio_files = list(getattr(args, "audio_files", []))
+    if not audio_files:
+        parser.print_help()
+        sys.exit(1)
+
+    logger.info(f"MLX Audio Separator version {package_version} beginning with input path(s): {', '.join(audio_files)}")
+
+    separator = Separator(**separator_kwargs)
 
     separator.load_model(model_filename=args.model_filename)
     output_files = separator.separate(audio_files, custom_output_names=args.custom_output_names)

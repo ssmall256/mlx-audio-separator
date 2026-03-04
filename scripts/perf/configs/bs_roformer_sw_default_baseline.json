@@ -1,0 +1,15 @@
+{
+  "models": [
+    "BS-Roformer-SW.ckpt"
+  ],
+  "warmup": 1,
+  "repeats": 3,
+  "separator": {
+    "output_format": "FLAC",
+    "performance_params": {
+      "speed_mode": "default",
+      "cache_clear_policy": "aggressive",
+      "write_workers": 1
+    }
+  }
+}

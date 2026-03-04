@@ -90,7 +90,7 @@ These numbers are scoped to the benchmark settings above and are not universal g
 
 Release-facing stable controls:
 
-- `--speed_mode {default,latency_safe,latency_safe_v2}`
+- `--speed_mode {default,latency_safe,latency_safe_v2,latency_safe_v3}`
 - `--cache_clear_policy {aggressive,deferred}`
 - `--write_workers <int>`
 
@@ -113,6 +113,100 @@ mlx-audio-separator \
   --benchmark_profile
 ```
 
+## BS-Roformer-SW Performance (Opt-In)
+
+For `BS-Roformer-SW.ckpt`, use the opt-in no-drift FLAC profile:
+
+```bash
+mlx-audio-separator song.mp3 \
+  -m BS-Roformer-SW.ckpt \
+  --output_format FLAC \
+  --speed_mode latency_safe_v3
+```
+
+`latency_safe_v3` keeps model inference behavior conservative and focuses on
+safe end-to-end latency wins (`deferred` cache clearing + async stem writes).
+
+To avoid repeated checkpoint conversion overhead, pre-convert once to
+`*.safetensors` and exit:
+
+```bash
+mlx-audio-separator \
+  -m BS-Roformer-SW.ckpt \
+  --save_converted_safetensors \
+  --preconvert_only
+```
+
+`safetensors` primarily improves model load/startup time. It is not expected to
+materially change per-file inference latency.
+
+Validation command (latency + deterministic equivalence):
+
+```bash
+uv run --with torch python scripts/perf/compare_latency.py \
+  --corpus-file /tmp/corpus_one.txt \
+  --baseline-config scripts/perf/configs/bs_roformer_sw_default_baseline.json \
+  --candidate-config scripts/perf/configs/bs_roformer_sw_latency_safe_v3_candidate.json \
+  --model-file-dir /tmp/audio-separator-models \
+  --allow-speed-mode-mismatch \
+  --target-improvement-demucs-mdxc 10.0 \
+  --equivalence-check \
+  --equivalence-threshold-rel-l2 1e-6 \
+  --output-json /tmp/bs_roformer_sw_latency_safe_v3_compare.json \
+  --output-markdown /tmp/bs_roformer_sw_latency_safe_v3_compare.md
+```
+
+## BS-Roformer-SW Optimization Program (Opt-In Tracks)
+
+As of March 4, 2026, `latency_safe_v3` remains the only promoted runtime win
+for `BS-Roformer-SW.ckpt`; all experimental tracks below are parked pending new
+evidence.
+
+Candidate configs for staged exploration live under `scripts/perf/configs/`:
+
+- `bs_roformer_sw_cand_grouped_bandmask.json`
+- `bs_roformer_sw_cand_fused_ola.json`
+- `bs_roformer_sw_cand_stream_pipeline.json`
+- `bs_roformer_sw_cand_compile_fullgraph.json`
+- `bs_roformer_sw_cand_flac_fastwrite.json`
+
+Corpus manifest templates:
+
+- Quick gate (3 files): `scripts/perf/corpora/bs_roformer_sw_quick.txt`
+- Full gate (12 files): `scripts/perf/corpora/bs_roformer_sw_full.txt`
+
+Quick-gate example:
+
+```bash
+uv run --with torch python scripts/perf/compare_latency.py \
+  --corpus-file scripts/perf/corpora/bs_roformer_sw_quick.txt \
+  --baseline-config scripts/perf/configs/bs_roformer_sw_latency_safe_v3_baseline.json \
+  --candidate-config scripts/perf/configs/bs_roformer_sw_cand_grouped_bandmask.json \
+  --model-file-dir /tmp/audio-separator-models \
+  --target-improvement-demucs-mdxc 3.0 \
+  --equivalence-check \
+  --equivalence-threshold-rel-l2 1e-6 \
+  --equivalence-max-files 1 \
+  --output-json /tmp/bs_roformer_sw_quick_gate.json \
+  --output-markdown /tmp/bs_roformer_sw_quick_gate.md
+```
+
+Full-gate example:
+
+```bash
+uv run --with torch python scripts/perf/compare_latency.py \
+  --corpus-file scripts/perf/corpora/bs_roformer_sw_full.txt \
+  --baseline-config scripts/perf/configs/bs_roformer_sw_latency_safe_v3_baseline.json \
+  --candidate-config scripts/perf/configs/bs_roformer_sw_cand_grouped_bandmask.json \
+  --model-file-dir /tmp/audio-separator-models \
+  --target-improvement-demucs-mdxc 5.0 \
+  --equivalence-check \
+  --equivalence-threshold-rel-l2 1e-6 \
+  --equivalence-max-files 0 \
+  --output-json /tmp/bs_roformer_sw_full_gate.json \
+  --output-markdown /tmp/bs_roformer_sw_full_gate.md
+```
+
 ## Documentation
 
 | Document | Description |
@@ -121,6 +215,7 @@ mlx-audio-separator \
 | [`docs/release-first.md`](docs/release-first.md) | Release execution playbook |
 | [`docs/reproducibility.md`](docs/reproducibility.md) | Reproducibility guide |
 | [`docs/wave4-opt-in.md`](docs/wave4-opt-in.md) | Wave 4 opt-in/experimental roadmap |
+| [`docs/bs-roformer-sw-optimization-program.md`](docs/bs-roformer-sw-optimization-program.md) | BS-Roformer-SW candidate gating and promotion table |
 | [`CHANGELOG.md`](CHANGELOG.md) | Changelog |
 | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | Third-party attribution and license notices |
 

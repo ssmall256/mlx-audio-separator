@@ -1,0 +1,13 @@
+# BS-Roformer-SW full gate corpus (12 files, 60s each, FLAC 44.1k stereo)
+/tmp/bs_roformer_sw_corpus/full_01_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_02_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_03_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_04_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_05_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_06_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_07_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_08_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_09_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_10_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_11_60s_44k_stereo.flac
+/tmp/bs_roformer_sw_corpus/full_12_60s_44k_stereo.flac

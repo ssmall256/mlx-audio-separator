@@ -614,7 +614,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/c4/f1/bd78057566bca62f1
 
 [[package]]
 name = "mlx-audio-separator"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "mlx" },

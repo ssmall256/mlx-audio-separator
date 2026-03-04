@@ -62,13 +62,14 @@ class Separator:
         pitch_shift: 0
 
     Performance Parameters (opt-in):
-        speed_mode: "default" | "latency_safe" | "latency_safe_v2"
+        speed_mode: "default" | "latency_safe" | "latency_safe_v2" | "latency_safe_v3"
         auto_tune_batch: False
         tune_probe_seconds: 8.0
         cache_clear_policy: "aggressive" | "deferred"
         write_workers: 1
         perf_trace: False
         perf_trace_path: None
+        save_converted_safetensors: False
     """
 
     def __init__(
@@ -90,6 +91,7 @@ class Separator:
         mdx_params=None,
         vr_params=None,
         performance_params=None,
+        save_converted_safetensors=False,
         info_only=False,
     ):
         self.logger = logging.getLogger(__name__)
@@ -173,6 +175,7 @@ class Separator:
                 raise ValueError("chunk_duration must be greater than 0")
         self.performance_params = normalize_performance_params(performance_params)
         self._strict_separation_errors = False
+        self.save_converted_safetensors = bool(save_converted_safetensors)
 
         if demucs_params is None:
             demucs_params = {
@@ -264,6 +267,13 @@ class Separator:
                 "MDX": 1,
                 "VR": 2,
             },
+            "latency_safe_v3": {
+                # FLAC-focused no-drift runtime profile (opt-in only).
+                "Demucs": 8,
+                "MDXC": 1,
+                "MDX": 1,
+                "VR": 1,
+            },
         }
         selected = profiles.get(speed_mode)
         if selected is None:
@@ -272,6 +282,16 @@ class Separator:
         self.logger.info(f"Applying {speed_mode} speed-mode presets.")
         for arch, batch_size in selected.items():
             self.arch_specific_params[arch]["batch_size"] = int(batch_size)
+
+        performance_overrides = {
+            "latency_safe_v3": {
+                "cache_clear_policy": "deferred",
+                "write_workers": 2,
+            },
+        }
+        runtime_selected = performance_overrides.get(speed_mode)
+        if runtime_selected:
+            self.performance_params.update(runtime_selected)
 
     def _build_tuning_key(self, arch: str, model_name: str, sr: int, channels: int):
         device = "unknown"
@@ -336,6 +356,15 @@ class Separator:
                 original_output_dir = self.output_dir
                 original_model_output_dir = getattr(self.model_instance, "output_dir", original_output_dir)
                 original_batch = self._get_model_batch_size()
+                runtime_attrs_to_restore = {}
+                for attr in (
+                    "override_model_segment_size",
+                    "segment_size",
+                    "overlap",
+                    "pitch_shift",
+                ):
+                    if hasattr(self.model_instance, attr):
+                        runtime_attrs_to_restore[attr] = getattr(self.model_instance, attr)
 
                 self.output_dir = tune_dir
                 self.model_instance.output_dir = tune_dir
@@ -359,6 +388,8 @@ class Separator:
                     self.model_instance.output_dir = original_model_output_dir
                     if original_batch is not None:
                         self._set_model_batch_size(original_batch)
+                    for attr, value in runtime_attrs_to_restore.items():
+                        setattr(self.model_instance, attr, value)
 
             best = select_best_candidate(timings, tie_ratio=0.03)
             self._set_model_batch_size(best)
@@ -786,7 +817,17 @@ class Separator:
         separator_class = getattr(module, class_name)
 
         self.logger.debug(f"Instantiating separator class for model type {model_type}: {separator_class}")
-        self.model_instance = separator_class(common_config=common_params, arch_config=self.arch_specific_params[model_type])
+        previous_save_env = os.environ.get("MLX_SAVE_SAFETENSORS")
+        if self.save_converted_safetensors:
+            os.environ["MLX_SAVE_SAFETENSORS"] = "1"
+        try:
+            self.model_instance = separator_class(common_config=common_params, arch_config=self.arch_specific_params[model_type])
+        finally:
+            if self.save_converted_safetensors:
+                if previous_save_env is None:
+                    os.environ.pop("MLX_SAVE_SAFETENSORS", None)
+                else:
+                    os.environ["MLX_SAVE_SAFETENSORS"] = previous_save_env
         self.model_type = model_type
 
         self.logger.debug("Loading model completed.")

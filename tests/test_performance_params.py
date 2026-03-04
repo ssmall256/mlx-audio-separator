@@ -20,10 +20,16 @@ class TestPerformanceParams:
         assert perf["write_workers"] == 1
         assert perf["experimental_vectorized_chunking"] is False
         assert perf["experimental_roformer_fast_norm"] is False
+        assert perf["experimental_roformer_grouped_band_split"] is False
+        assert perf["experimental_roformer_grouped_mask_estimator"] is False
+        assert perf["experimental_roformer_fused_overlap_add"] is False
+        assert perf["experimental_mlx_stream_pipeline"] is False
+        assert perf["experimental_roformer_compile_fullgraph"] is False
         assert perf["experimental_compile_model_forward"] is False
         assert perf["experimental_vr_device_residency"] is False
         assert perf["experimental_compile_shapeless"] is False
         assert perf["experimental_roformer_static_compiled_demix"] is False
+        assert perf["experimental_flac_fast_write"] is False
         assert perf["perf_trace"] is False
         assert perf["perf_trace_path"] is None
 
@@ -48,6 +54,19 @@ class TestPerformanceParams:
         assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
         assert sep.arch_specific_params["MDX"]["batch_size"] == 1
         assert sep.arch_specific_params["VR"]["batch_size"] == 2
+
+    def test_latency_safe_v3_runtime_overrides(self, tmp_path):
+        sep = Separator(
+            info_only=True,
+            model_file_dir=str(tmp_path / "models"),
+            performance_params={"speed_mode": "latency_safe_v3"},
+        )
+        assert sep.arch_specific_params["Demucs"]["batch_size"] == 8
+        assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
+        assert sep.arch_specific_params["MDX"]["batch_size"] == 1
+        assert sep.arch_specific_params["VR"]["batch_size"] == 1
+        assert sep.performance_params["cache_clear_policy"] == "deferred"
+        assert sep.performance_params["write_workers"] == 2
 
     def test_invalid_speed_mode(self):
         with pytest.raises(ValueError, match="speed_mode"):
@@ -109,10 +128,16 @@ def test_cli_performance_params_propagation(monkeypatch, tmp_path):
             "2",
             "--experimental_vectorized_chunking",
             "--experimental_roformer_fast_norm",
+            "--experimental_roformer_grouped_band_split",
+            "--experimental_roformer_grouped_mask_estimator",
+            "--experimental_roformer_fused_overlap_add",
+            "--experimental_mlx_stream_pipeline",
+            "--experimental_roformer_compile_fullgraph",
             "--experimental_compile_model_forward",
             "--experimental_vr_device_residency",
             "--experimental_compile_shapeless",
             "--experimental_roformer_static_compiled_demix",
+            "--experimental_flac_fast_write",
             "--perf_trace",
             "--perf_trace_path",
             str(tmp_path / "perf.jsonl"),
@@ -130,10 +155,16 @@ def test_cli_performance_params_propagation(monkeypatch, tmp_path):
     assert perf["write_workers"] == 2
     assert perf["experimental_vectorized_chunking"] is True
     assert perf["experimental_roformer_fast_norm"] is True
+    assert perf["experimental_roformer_grouped_band_split"] is True
+    assert perf["experimental_roformer_grouped_mask_estimator"] is True
+    assert perf["experimental_roformer_fused_overlap_add"] is True
+    assert perf["experimental_mlx_stream_pipeline"] is True
+    assert perf["experimental_roformer_compile_fullgraph"] is True
     assert perf["experimental_compile_model_forward"] is True
     assert perf["experimental_vr_device_residency"] is True
     assert perf["experimental_compile_shapeless"] is True
     assert perf["experimental_roformer_static_compiled_demix"] is True
+    assert perf["experimental_flac_fast_write"] is True
     assert perf["perf_trace"] is True
     assert str(perf["perf_trace_path"]).endswith("perf.jsonl")
 
@@ -167,6 +198,73 @@ def test_cli_accepts_latency_safe_v2(monkeypatch, tmp_path):
     )
     cli.main()
     assert captured["performance_params"]["speed_mode"] == "latency_safe_v2"
+
+
+def test_cli_accepts_latency_safe_v3(monkeypatch, tmp_path):
+    import mlx_audio_separator.utils.cli as cli
+
+    input_wav = tmp_path / "in.wav"
+    input_wav.write_bytes(b"fake")
+    captured = {}
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def load_model(self, model_filename):
+            captured["model_filename"] = model_filename
+
+        def separate(self, audio_files, custom_output_names=None):
+            return []
+
+    monkeypatch.setattr("mlx_audio_separator.core.Separator", FakeSeparator)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mlx-audio-separator",
+            str(input_wav),
+            "--speed_mode",
+            "latency_safe_v3",
+        ],
+    )
+    cli.main()
+    assert captured["performance_params"]["speed_mode"] == "latency_safe_v3"
+
+
+def test_cli_preconvert_only_and_save_safetensors(monkeypatch):
+    import mlx_audio_separator.utils.cli as cli
+
+    captured = {"separate_called": False}
+
+    class FakeSeparator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def load_model(self, model_filename):
+            captured["model_filename"] = model_filename
+
+        def separate(self, audio_files, custom_output_names=None):
+            captured["separate_called"] = True
+            return []
+
+    monkeypatch.setattr("mlx_audio_separator.core.Separator", FakeSeparator)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "mlx-audio-separator",
+            "--model_filename",
+            "BS-Roformer-SW.ckpt",
+            "--preconvert_only",
+            "--save_converted_safetensors",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert captured["model_filename"] == "BS-Roformer-SW.ckpt"
+    assert captured["save_converted_safetensors"] is True
+    assert captured["separate_called"] is False
 
 
 def test_cli_help_hides_inactive_compat_flags(monkeypatch, capsys):

@@ -1,0 +1,13 @@
+# output_path\tsource_path\tstart_offset_seconds\tassigned_bucket
+/tmp/bs_roformer_sw_corpus/full_01_60s_44k_stereo.flac\t<source_path_01>\t25\tvocal_forward_female
+/tmp/bs_roformer_sw_corpus/full_02_60s_44k_stereo.flac\t<source_path_02>\t35\tharmony_group
+/tmp/bs_roformer_sw_corpus/full_03_60s_44k_stereo.flac\t<source_path_03>\t15\tvocal_forward_female
+/tmp/bs_roformer_sw_corpus/full_04_60s_44k_stereo.flac\t<source_path_04>\t60\tlive_reverb_heavy
+/tmp/bs_roformer_sw_corpus/full_05_60s_44k_stereo.flac\t<source_path_05>\t40\tbass_heavy_electronic
+/tmp/bs_roformer_sw_corpus/full_06_60s_44k_stereo.flac\t<source_path_06>\t20\tvocal_forward_male
+/tmp/bs_roformer_sw_corpus/full_07_60s_44k_stereo.flac\t<source_path_07>\t70\tdense_rock
+/tmp/bs_roformer_sw_corpus/full_08_60s_44k_stereo.flac\t<source_path_08>\t120\tinstrumental_only
+/tmp/bs_roformer_sw_corpus/full_09_60s_44k_stereo.flac\t<source_path_09>\t55\tsparse_acoustic
+/tmp/bs_roformer_sw_corpus/full_10_60s_44k_stereo.flac\t<source_path_10>\t45\tharmony_falsetto
+/tmp/bs_roformer_sw_corpus/full_11_60s_44k_stereo.flac\t<source_path_11>\t30\tsparse_ballad
+/tmp/bs_roformer_sw_corpus/full_12_60s_44k_stereo.flac\t<source_path_12>\t35\tbass_heavy_funk
