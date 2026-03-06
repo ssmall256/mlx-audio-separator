@@ -138,8 +138,7 @@ class VRSeparator(CommonSeparator):
                 wave_mx = audio_data.T if audio_data.ndim == 2 else mx.stack([audio_data, audio_data])
                 if wave_mx.ndim == 1:
                     wave_mx = mx.stack([wave_mx, wave_mx])
-                # Numpy copy for resampling to lower bands
-                X_wave[d] = np.array(wave_mx)
+                X_wave[d] = wave_mx
             else:
                 # Resample from higher band
                 X_wave[d] = self._resample(
@@ -148,8 +147,7 @@ class VRSeparator(CommonSeparator):
                     bp["sr"],
                 )
 
-            # Use mlx array directly for highest band (avoids numpy→mlx round-trip)
-            wave_for_stft = wave_mx if d == bands_n else X_wave[d]
+            wave_for_stft = X_wave[d]
             X_spec_s[d] = spec_utils.wave_to_spectrogram(
                 wave_for_stft, bp["hl"], bp["n_fft"], self.model_params, band=d,
                 is_v51_model=self.is_vr_51_model,
@@ -165,16 +163,21 @@ class VRSeparator(CommonSeparator):
         return X_spec
 
     def _resample(self, audio, orig_sr, target_sr):
-        """Resample audio using mlx-audio-io."""
+        """Resample audio using mlx-audio-io.
+
+        Args:
+            audio: MLX array with shape (channels, frames)
+        Returns:
+            Resampled MLX array with shape (channels, frames)
+        """
         import mlx_audio_io as mac
 
         if orig_sr == target_sr:
             return audio
 
-        # audio is numpy (channels, frames) — convert to (frames, channels) mlx for mac.resample
-        audio_mx = mx.array(audio.T, dtype=mx.float32)
-        resampled = mac.resample(audio_mx, int(orig_sr), int(target_sr))
-        return np.array(resampled).T.astype(np.float32)
+        # mac.resample expects (frames, channels)
+        resampled = mac.resample(audio.T, int(orig_sr), int(target_sr))
+        return resampled.T
 
     def _inference_vr(self, X_spec, aggressiveness):
         """Run VR inference with windowed processing."""

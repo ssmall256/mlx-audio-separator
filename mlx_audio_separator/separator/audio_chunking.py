@@ -4,8 +4,8 @@ import logging
 import os
 from typing import List
 
+import mlx.core as mx
 import mlx_audio_io as mac
-import numpy as np
 
 
 class AudioChunker:
@@ -40,10 +40,9 @@ class AudioChunker:
 
         self.logger.debug(f"Loading audio file: {input_path}")
         audio, sr = mac.load(str(input_path), sr=sample_rate, dtype="float32")
-        audio_np = np.array(audio, copy=False)
 
-        # audio_np shape: (frames, channels)
-        total_frames = audio_np.shape[0]
+        # audio shape: (frames, channels)
+        total_frames = int(audio.shape[0])
         chunk_frames = int(self.chunk_duration_seconds * sr)
 
         num_chunks = (total_frames + chunk_frames - 1) // chunk_frames
@@ -60,7 +59,6 @@ class AudioChunker:
         for i in range(num_chunks):
             start = i * chunk_frames
             end = min(start + chunk_frames, total_frames)
-            chunk = audio_np[start:end]
 
             chunk_filename = f"chunk_{i:04d}{ext}"
             chunk_path = os.path.join(output_dir, chunk_filename)
@@ -69,7 +67,7 @@ class AudioChunker:
                 f"Exporting chunk {i + 1}/{num_chunks}: "
                 f"{start / sr:.1f}s - {end / sr:.1f}s to {chunk_path}"
             )
-            mac.save(str(chunk_path), chunk, sr)
+            mac.save(str(chunk_path), audio[start:end], sr)
             chunk_paths.append(chunk_path)
 
         return chunk_paths
@@ -98,10 +96,10 @@ class AudioChunker:
         for i, chunk_path in enumerate(chunk_paths):
             self.logger.debug(f"Loading chunk {i + 1}/{len(chunk_paths)}: {chunk_path}")
             audio, sr = mac.load(str(chunk_path), sr=sample_rate, dtype="float32")
-            chunks.append(np.array(audio, copy=False))
+            chunks.append(audio)
 
-        combined = np.concatenate(chunks, axis=0)
-        total_duration = combined.shape[0] / sample_rate
+        combined = mx.concatenate(chunks, axis=0)
+        total_duration = int(combined.shape[0]) / sample_rate
 
         self.logger.info(f"Exporting merged audio ({total_duration:.1f}s) to {output_path}")
         mac.save(str(output_path), combined, sample_rate)
