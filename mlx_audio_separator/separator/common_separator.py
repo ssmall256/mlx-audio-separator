@@ -201,7 +201,10 @@ class CommonSeparator:
 
             # Load with mlx-audio-io, resample to target sample rate
             # Returns (mx.array, sample_rate) in shape [frames, channels]
-            audio_mx, sr = mac.load(str(mix), sr=self.sample_rate, dtype="float32")
+            audio_mx, sr = mac.load(str(mix), dtype="float32")
+            if sr != self.sample_rate:
+                quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
+                audio_mx = mac.resample(audio_mx, sr, self.sample_rate, quality=quality)
 
             # Convert to numpy and transpose to (channels, frames)
             mix = np.array(audio_mx, copy=False)

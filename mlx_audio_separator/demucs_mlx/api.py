@@ -193,9 +193,10 @@ class Separator:
         # mlx_audio_io.load returns (mx.array, sample_rate) in shape [frames, channels]
         audio_mx, sr = mac.load(str(path), dtype="float32")
         if sr != self.samplerate:
-            # Resample to model sample rate via mlx-audio-io
-            audio_mx, sr = mac.load(str(path), sr=self.samplerate, dtype="float32")
-        wav_mx = audio_mx.T if audio_mx.ndim == 2 else mx.stack([audio_mx, audio_mx], axis=0)
+            quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
+            audio_mx = mac.resample(audio_mx, sr, self.samplerate, quality=quality)
+        # Transpose to (channels, frames) and keep as MLX
+        wav_mx = mx.transpose(audio_mx, (1, 0))
         return self.separate_tensor(wav_mx, return_mx=return_mx)
 
 

@@ -426,7 +426,6 @@ def main():
         os.environ["MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED"] = "1"
 
     wav_mx, sr = mac.load(audio_file, dtype="float32")
-    wav_mx = wav_mx.T if wav_mx.ndim == 2 else mx.stack([wav_mx, wav_mx], axis=0)
 
     separator = DemucsMLXSeparator(
         model=str(args.model),
@@ -438,8 +437,9 @@ def main():
         progress=False,
     )
     if int(sr) != separator.samplerate:
-        wav_mx, _ = mac.load(audio_file, sr=separator.samplerate, dtype="float32")
-        wav_mx = wav_mx.T if wav_mx.ndim == 2 else mx.stack([wav_mx, wav_mx], axis=0)
+        quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
+        wav_mx = mac.resample(wav_mx, sr, separator.samplerate, quality=quality)
+    wav_mx = wav_mx.T if wav_mx.ndim == 2 else mx.stack([wav_mx, wav_mx], axis=0)
 
     cfg = TraceConfig(sample_size=int(args.sample_size), max_events=int(args.max_events))
     tracer1 = ModuleTracer(module_paths={}, cfg=cfg)

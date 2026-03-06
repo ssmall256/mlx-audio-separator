@@ -45,16 +45,13 @@ def resample_mx(
         x: Input MLX array with shape (channels, frames) or (batch, channels, frames)
         orig_freq: Original sample rate
         new_freq: Target sample rate
-        quality: Resampling quality ("fastest", "low", "medium", "high", "best", "default")
+        quality: Resampling quality ("fastest", "low", "medium", "high", "best",
+                 "soxr_vhq", "default")
 
     Returns:
         Resampled MLX array with same shape layout
     """
-    import tempfile
-    from pathlib import Path
-
     import mlx_audio_io as mac
-    import numpy as np
 
     mx = _require_mlx()
 
@@ -76,17 +73,6 @@ def resample_mx(
     else:
         raise ValueError(f"Expected 2D or 3D array, got shape {original_shape}")
 
-    # Convert to numpy and transpose to (frames, channels) for mlx-audio-io
-    x_np = np.array(x, copy=False).T
-
-    # Use mlx-audio-io via temp file
-    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
-        temp_path = f.name
-
-    try:
-        mac.save(temp_path, x_np, orig_freq, encoding="float32", clip=False)
-        resampled, _ = mac.load(temp_path, sr=new_freq, resample_quality=quality)
-        result = mx.array(resampled).T
-        return result
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
+    # x is (channels, frames); mac.resample expects (frames, channels)
+    resampled = mac.resample(mx.transpose(x, (1, 0)), orig_freq, new_freq, quality=quality)
+    return mx.transpose(resampled, (1, 0))
