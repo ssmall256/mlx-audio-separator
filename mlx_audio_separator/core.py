@@ -345,11 +345,7 @@ class Separator:
                 return
 
             probe_seconds = float(self.performance_params["tune_probe_seconds"])
-            audio_mx, sr = mac.load(str(audio_file_path), dtype="float32")
-            if sr != self.sample_rate:
-                quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
-                audio_mx = mac.resample(audio_mx, sr, self.sample_rate, quality=quality)
-                sr = self.sample_rate
+            audio_mx, sr = mac.load(str(audio_file_path), sr=self.sample_rate, dtype="float32")
             probe_frames = max(1, int(round(probe_seconds * sr)))
             probe_audio = audio_mx[:probe_frames]
 

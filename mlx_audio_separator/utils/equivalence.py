@@ -207,11 +207,7 @@ def _demucs_in_memory_stem_map(sep: Separator, audio_path: str) -> dict[str, tup
         raise RuntimeError("Demucs in-memory path requires loaded Demucs separator instance.")
 
     demucs_sep = inst._demucs_separator
-    audio_mx, sr = mac.load(str(audio_path), dtype="float32")
-    if int(sr) != int(demucs_sep.samplerate):
-        quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
-        audio_mx = mac.resample(audio_mx, sr, demucs_sep.samplerate, quality=quality)
-        sr = demucs_sep.samplerate
+    audio_mx, sr = mac.load(str(audio_path), sr=demucs_sep.samplerate, dtype="float32")
     wav_mx = audio_mx.T if audio_mx.ndim == 2 else mx.stack([audio_mx, audio_mx], axis=0)
 
     _, stems_mx = demucs_sep.separate_tensor(wav_mx, return_mx=True)

@@ -133,12 +133,8 @@ class VRSeparator(CommonSeparator):
 
             if d == bands_n:
                 # Load highest band from file — keep as mlx for GPU STFT
-                audio_data, sr = mac.load(str(self.audio_file_path), dtype="float32")
-                if sr != bp["sr"]:
-                    quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
-                    audio_data = mac.resample(audio_data, sr, bp["sr"], quality=quality)
-                    sr = bp["sr"]
-                # mac.load returns (frames, channels), transpose to (channels, frames)
+                audio_data, sr = mac.load(str(self.audio_file_path), sr=bp["sr"], dtype="float32")
+                # load returns (frames, channels), transpose to (channels, frames)
                 wave_mx = audio_data.T if audio_data.ndim == 2 else mx.stack([audio_data, audio_data])
                 if wave_mx.ndim == 1:
                     wave_mx = mx.stack([wave_mx, wave_mx])

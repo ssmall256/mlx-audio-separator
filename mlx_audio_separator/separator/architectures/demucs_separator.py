@@ -127,10 +127,7 @@ class DemucsSeparator(CommonSeparator):
 
         # Decode (kept in MLX tensors to avoid host round-trips).
         t0 = time.perf_counter()
-        audio_mx, sr = mac.load(str(audio_file_path), dtype="float32")
-        if sr != self._demucs_separator.samplerate:
-            quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
-            audio_mx = mac.resample(audio_mx, sr, self._demucs_separator.samplerate, quality=quality)
+        audio_mx, sr = mac.load(str(audio_file_path), sr=self._demucs_separator.samplerate, dtype="float32")
         wav_mx = audio_mx.T if audio_mx.ndim == 2 else mx.stack([audio_mx, audio_mx], axis=0)
         self.add_perf_time("decode_s", time.perf_counter() - t0)
 

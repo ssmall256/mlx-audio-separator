@@ -6,11 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- All audio loading paths now use `mac.resample()` instead of double-loading files via `mac.load(..., sr=...)`. This resamples in memory rather than re-reading from disk, improving efficiency.
+- All audio loading paths use `mac.load(path, sr=target)` for resampling, which now auto-selects `soxr_vhq` quality when available (via upstream mlx-audio-io change).
 - Demucs CLI (`separate.py`) no longer raises `ValueError` when input sample rate differs from model sample rate — it resamples automatically.
 - Demucs audio pipeline (`separate.py`, `api.py`) now uses native MLX arrays end-to-end instead of numpy intermediaries.
 - `mlx_backend.resample_mx()` uses direct `mac.resample()` instead of writing/reading a temp file.
-- Resampling quality defaults to `soxr_vhq` when available (via `mac.supports_soxr()`), with automatic fallback to `best`.
 
 ## 0.1.1 - 2026-02-24
 

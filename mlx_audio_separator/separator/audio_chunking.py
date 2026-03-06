@@ -39,11 +39,7 @@ class AudioChunker:
         os.makedirs(output_dir, exist_ok=True)
 
         self.logger.debug(f"Loading audio file: {input_path}")
-        audio, sr = mac.load(str(input_path), dtype="float32")
-        if sr != sample_rate:
-            quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
-            audio = mac.resample(audio, sr, sample_rate, quality=quality)
-            sr = sample_rate
+        audio, sr = mac.load(str(input_path), sr=sample_rate, dtype="float32")
         audio_np = np.array(audio, copy=False)
 
         # audio_np shape: (frames, channels)
@@ -101,11 +97,7 @@ class AudioChunker:
         chunks = []
         for i, chunk_path in enumerate(chunk_paths):
             self.logger.debug(f"Loading chunk {i + 1}/{len(chunk_paths)}: {chunk_path}")
-            audio, sr = mac.load(str(chunk_path), dtype="float32")
-            if sr != sample_rate:
-                quality = 'soxr_vhq' if mac.supports_soxr() else 'best'
-                audio = mac.resample(audio, sr, sample_rate, quality=quality)
-                sr = sample_rate
+            audio, sr = mac.load(str(chunk_path), sr=sample_rate, dtype="float32")
             chunks.append(np.array(audio, copy=False))
 
         combined = np.concatenate(chunks, axis=0)
