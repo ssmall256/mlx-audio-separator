@@ -432,46 +432,70 @@ class MelBandRoformerMLX(nn.Module):
             w = np.hanning(chunk_len).astype(np.float32)
         else:
             w = np.ones((chunk_len,), dtype=np.float32)
+        w_mx = mx.array(w, dtype=mx.float32)
+        w_view_single = w_mx.reshape(1, 1, -1)
+        w_view_multi = w_mx.reshape(1, 1, 1, -1)
 
         if self.num_stems == 1:
-            out_acc = np.zeros((B, C, total_len), dtype=np.float32)
-            w_acc = np.zeros((1, 1, total_len), dtype=np.float32)
+            out_acc = mx.zeros((B, C, total_len), dtype=mx.float32)
+            w_acc = mx.zeros((1, 1, total_len), dtype=mx.float32)
         else:
-            out_acc = np.zeros((B, self.num_stems, C, total_len), dtype=np.float32)
-            w_acc = np.zeros((1, 1, 1, total_len), dtype=np.float32)
+            out_acc = mx.zeros((B, self.num_stems, C, total_len), dtype=mx.float32)
+            w_acc = mx.zeros((1, 1, 1, total_len), dtype=mx.float32)
 
         starts = [hop * hop_len for hop in range(n_hops)]
+        eval_flush_interval = max(8, int(batch_hops) * 2)
+        pending_updates = 0
+        arange_chunk = mx.arange(chunk_len, dtype=mx.int32)
+        all_starts_mx = mx.array(starts, dtype=mx.int32)
+        all_gather_idx = all_starts_mx[:, None] + arange_chunk[None, :]
+        use_gather_batching = (
+            str(os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_CHUNK_GATHER_BATCHING", "0")).strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
         for i in range(0, n_hops, batch_hops):
             hops = list(range(i, min(i + batch_hops, n_hops)))
-            chunk_list = [padded[..., starts[h] : starts[h] + chunk_len] for h in hops]
-            chunk_batch = mx.concatenate(chunk_list, axis=0)
+            H = len(hops)
+            if use_gather_batching:
+                try:
+                    gather_idx = all_gather_idx[i : i + H]
+                    chunk_batch = mx.transpose(padded[:, :, gather_idx], (2, 0, 1, 3))
+                    chunk_batch = chunk_batch.reshape(H * B, C, chunk_len)
+                except Exception:
+                    chunk_list = [padded[..., starts[h] : starts[h] + chunk_len] for h in hops]
+                    chunk_batch = mx.concatenate(chunk_list, axis=0)
+            else:
+                chunk_list = [padded[..., starts[h] : starts[h] + chunk_len] for h in hops]
+                chunk_batch = mx.concatenate(chunk_list, axis=0)
 
             batch_out = self(chunk_batch)
-            mx.eval(batch_out)
-            batch_np = np.array(batch_out, dtype=np.float32)
 
-            del chunk_batch, batch_out
-
-            H = len(hops)
             if self.num_stems == 1:
-                batch_np = batch_np.reshape(H, B, C, chunk_len)
+                batch_out = batch_out.reshape(H, B, C, chunk_len)
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
-                    out_acc[..., start:end] += batch_np[j] * w[None, None, :]
-                    w_acc[..., start:end] += w[None, None, :]
+                    out_acc = out_acc.at[..., start:end].add(batch_out[j] * w_view_single)
+                    w_acc = w_acc.at[..., start:end].add(w_view_single)
             else:
-                batch_np = batch_np.reshape(H, B, self.num_stems, C, chunk_len)
+                batch_out = batch_out.reshape(H, B, self.num_stems, C, chunk_len)
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
-                    out_acc[..., start:end] += batch_np[j] * w[None, None, None, :]
-                    w_acc[..., start:end] += w[None, None, None, :]
+                    out_acc = out_acc.at[..., start:end].add(batch_out[j] * w_view_multi)
+                    w_acc = w_acc.at[..., start:end].add(w_view_multi)
 
-        out_acc = out_acc / np.maximum(w_acc, 1e-8)
+            pending_updates += H
+            if pending_updates >= eval_flush_interval:
+                mx.eval(out_acc, w_acc)
+                pending_updates = 0
+
+        mx.eval(out_acc, w_acc)
+        out_acc = out_acc / mx.maximum(w_acc, 1e-8)
         out_acc = out_acc[..., :T]
-        return mx.array(out_acc)
+        mx.eval(out_acc)
+        return out_acc
 
     def separate(self, wav: mx.array, *, sr: int = 44100) -> mx.array:
         """Convenience wrapper: handles shape normalization and chunking."""

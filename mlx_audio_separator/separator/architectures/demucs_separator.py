@@ -26,6 +26,24 @@ class DemucsSeparator(CommonSeparator):
         self.segments_enabled = arch_config.get("segments_enabled", True)
         self.batch_size = int(arch_config.get("batch_size", 8))
         self.seed = arch_config.get("seed")
+        self.experimental_demucs_wiener_preallocate_output = bool(
+            self.performance_params.get("experimental_demucs_wiener_preallocate_output", False)
+        )
+        self.experimental_demucs_apply_concat_batching = bool(
+            self.performance_params.get("experimental_demucs_apply_concat_batching", False)
+        )
+        self.experimental_demucs_gn_glu_multigroup = bool(
+            self.performance_params.get("experimental_demucs_gn_glu_multigroup", False)
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_PREALLOC_OUTPUT"] = (
+            "1" if self.experimental_demucs_wiener_preallocate_output else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_APPLY_CONCAT_BATCHING"] = (
+            "1" if self.experimental_demucs_apply_concat_batching else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP"] = (
+            "1" if self.experimental_demucs_gn_glu_multigroup else "0"
+        )
 
         self.logger.debug(
             f"Demucs params: segment_size={self.segment_size}, shifts={self.shifts}, "

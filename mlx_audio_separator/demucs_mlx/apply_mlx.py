@@ -25,6 +25,12 @@ def _deterministic_accumulation_enabled() -> bool:
     return str(fused).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _demucs_apply_concat_batching_enabled() -> bool:
+    """Enable concat-based split batching to avoid temporary 4D stack tensors."""
+    raw = os.environ.get("MLX_AUDIO_SEPARATOR_DEMUCS_APPLY_CONCAT_BATCHING", "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class TensorChunk:
     def __init__(self, tensor: mx.array, offset=0, length=None):
         total_length = tensor.shape[-1]
@@ -206,12 +212,17 @@ def apply_model(
             if not batch_inputs:
                 return
 
-            # 1. Stack: (Batch_Segments, Audio_Batch, Channels, Time)
-            batch_tensor = mx.stack(batch_inputs)
-
-            # 2. Reshape: Flatten Segments into Batch -> (Total_Batch, Channels, Time)
-            b_seg, b_audio, channels, length = batch_tensor.shape
-            batch_tensor_flat = batch_tensor.reshape(b_seg * b_audio, channels, length)
+            b_seg = len(batch_inputs)
+            if _demucs_apply_concat_batching_enabled():
+                # Concat directly to flattened (Batch_Segments * Audio_Batch, Channels, Time).
+                b_audio, channels, length = batch_inputs[0].shape
+                batch_tensor_flat = mx.concatenate(batch_inputs, axis=0)
+            else:
+                # 1. Stack: (Batch_Segments, Audio_Batch, Channels, Time)
+                batch_tensor = mx.stack(batch_inputs)
+                # 2. Reshape: Flatten Segments into Batch -> (Total_Batch, Channels, Time)
+                _, b_audio, channels, length = batch_tensor.shape
+                batch_tensor_flat = batch_tensor.reshape(b_seg * b_audio, channels, length)
 
             # 3. Run Model (Standard 3D Input)
             batch_out_flat = model(batch_tensor_flat)

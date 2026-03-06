@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import mlx.core as mx
 
 
@@ -17,6 +19,22 @@ def _to_complex(x: mx.array) -> mx.array:
 def _from_complex(x: mx.array) -> mx.array:
     """Convert native complex64 tensor to (..., 2) real/imag."""
     return mx.stack([x.real, x.imag], axis=-1)
+
+
+def _complex_phase(x: mx.array) -> mx.array:
+    """Return phase angle in radians, with compatibility fallback."""
+    angle_fn = getattr(mx, "angle", None)
+    if callable(angle_fn):
+        return angle_fn(x)
+    arctan2_fn = getattr(mx, "arctan2", None)
+    if callable(arctan2_fn):
+        return arctan2_fn(mx.imag(x), mx.real(x))
+    raise AttributeError("mlx.core does not expose angle() or arctan2() for complex phase.")
+
+
+def _wiener_preallocate_output_enabled() -> bool:
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_PREALLOC_OUTPUT", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 @mx.compile
 def _invert_2x2_complex(M: mx.array) -> mx.array:
@@ -185,6 +203,7 @@ def expectation_maximization(
     """
     nb_frames, nb_bins, nb_channels = x.shape
     nb_sources = y.shape[-1]
+    use_prealloc_output = _wiener_preallocate_output_enabled()
     
     # Initialize Power Spectral Densities (PSD)
     # v: (Frames, Bins, Sources)
@@ -227,18 +246,26 @@ def expectation_maximization(
         
         # --- Separation Step (E-step) ---
         # Apply Wiener filter with updated R and v
-        y_new_list = []
-        
-        for pos in range(0, nb_frames, batch_size):
-            end_pos = min(nb_frames, pos + batch_size)
-            x_slice = x[pos:end_pos]
-            v_slice = v[pos:end_pos]
-            
-            # Apply compiled Wiener filter
-            y_batch = _apply_wiener_batch(x_slice, v_slice, R, eps)
-            y_new_list.append(y_batch)
-            
-        y = mx.concatenate(y_new_list, axis=0)
+        if use_prealloc_output:
+            y_next_real = mx.zeros(y.shape, dtype=mx.float32)
+            y_next_imag = mx.zeros(y.shape, dtype=mx.float32)
+            for pos in range(0, nb_frames, batch_size):
+                end_pos = min(nb_frames, pos + batch_size)
+                x_slice = x[pos:end_pos]
+                v_slice = v[pos:end_pos]
+                y_batch = _apply_wiener_batch(x_slice, v_slice, R, eps)
+                y_next_real = y_next_real.at[pos:end_pos].add(mx.real(y_batch).astype(mx.float32))
+                y_next_imag = y_next_imag.at[pos:end_pos].add(mx.imag(y_batch).astype(mx.float32))
+            y = y_next_real.astype(mx.complex64) + 1j * y_next_imag.astype(mx.complex64)
+        else:
+            y_new_list = []
+            for pos in range(0, nb_frames, batch_size):
+                end_pos = min(nb_frames, pos + batch_size)
+                x_slice = x[pos:end_pos]
+                v_slice = v[pos:end_pos]
+                y_batch = _apply_wiener_batch(x_slice, v_slice, R, eps)
+                y_new_list.append(y_batch)
+            y = mx.concatenate(y_new_list, axis=0)
 
     return y, v, R
 
@@ -271,7 +298,7 @@ def wiener(
     else:
         # Phase copying
         # mix_complex: (F, B, C)
-        angle = mx.angle(mix_complex)[..., None] # (F, B, C, 1)
+        angle = _complex_phase(mix_complex)[..., None]  # (F, B, C, 1)
         # targets: (F, B, C, S)
         # Euler's formula: mag * exp(1j * angle)
         y = targets_spectrograms.astype(mx.complex64) * mx.exp(1j * angle)

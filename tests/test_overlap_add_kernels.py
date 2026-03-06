@@ -30,3 +30,17 @@ def test_accumulate_span_does_not_use_metal_when_not_opted_in(monkeypatch):
 
     assert span_result.shape == (1, 2, 12)
     assert span_counter.shape == (12,)
+
+
+def test_overlap_add_threadgroup_selector_legacy(monkeypatch):
+    monkeypatch.setenv("MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING", "0")
+    assert oak._select_overlap_add_threadgroup_size(17) == 17
+    assert oak._select_overlap_add_threadgroup_size(33) == 33
+    assert oak._select_overlap_add_threadgroup_size(512) == 256
+
+
+def test_overlap_add_threadgroup_selector_simd_aligned(monkeypatch):
+    monkeypatch.setenv("MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING", "1")
+    assert oak._select_overlap_add_threadgroup_size(17) == 32
+    assert oak._select_overlap_add_threadgroup_size(33) == 64
+    assert oak._select_overlap_add_threadgroup_size(512) == 256

@@ -24,10 +24,18 @@ DEFAULT_PERFORMANCE_PARAMS = {
     "experimental_roformer_fast_norm": False,
     "experimental_roformer_grouped_band_split": False,
     "experimental_roformer_grouped_mask_estimator": False,
+    "experimental_roformer_grouped_weight_cache": False,
+    "experimental_roformer_chunk_gather_batching": False,
     "experimental_roformer_fused_overlap_add": False,
+    "experimental_roformer_ola_simd_tuning": False,
     "experimental_mlx_stream_pipeline": False,
     "experimental_roformer_compile_fullgraph": False,
     "experimental_compile_model_forward": False,
+    "experimental_mdxc_defer_batch_eval": False,
+    "experimental_mdxc_precompute_gather_idx": False,
+    "experimental_demucs_apply_concat_batching": False,
+    "experimental_demucs_wiener_preallocate_output": False,
+    "experimental_demucs_gn_glu_multigroup": False,
     "experimental_vr_device_residency": False,
     "experimental_compile_shapeless": False,
     "experimental_roformer_static_compiled_demix": False,
@@ -60,10 +68,18 @@ def normalize_performance_params(params: dict[str, Any] | None) -> dict[str, Any
     out["experimental_roformer_fast_norm"] = bool(out["experimental_roformer_fast_norm"])
     out["experimental_roformer_grouped_band_split"] = bool(out["experimental_roformer_grouped_band_split"])
     out["experimental_roformer_grouped_mask_estimator"] = bool(out["experimental_roformer_grouped_mask_estimator"])
+    out["experimental_roformer_grouped_weight_cache"] = bool(out["experimental_roformer_grouped_weight_cache"])
+    out["experimental_roformer_chunk_gather_batching"] = bool(out["experimental_roformer_chunk_gather_batching"])
     out["experimental_roformer_fused_overlap_add"] = bool(out["experimental_roformer_fused_overlap_add"])
+    out["experimental_roformer_ola_simd_tuning"] = bool(out["experimental_roformer_ola_simd_tuning"])
     out["experimental_mlx_stream_pipeline"] = bool(out["experimental_mlx_stream_pipeline"])
     out["experimental_roformer_compile_fullgraph"] = bool(out["experimental_roformer_compile_fullgraph"])
     out["experimental_compile_model_forward"] = bool(out["experimental_compile_model_forward"])
+    out["experimental_mdxc_defer_batch_eval"] = bool(out["experimental_mdxc_defer_batch_eval"])
+    out["experimental_mdxc_precompute_gather_idx"] = bool(out["experimental_mdxc_precompute_gather_idx"])
+    out["experimental_demucs_apply_concat_batching"] = bool(out["experimental_demucs_apply_concat_batching"])
+    out["experimental_demucs_wiener_preallocate_output"] = bool(out["experimental_demucs_wiener_preallocate_output"])
+    out["experimental_demucs_gn_glu_multigroup"] = bool(out["experimental_demucs_gn_glu_multigroup"])
     out["experimental_vr_device_residency"] = bool(out["experimental_vr_device_residency"])
     out["experimental_compile_shapeless"] = bool(out["experimental_compile_shapeless"])
     out["experimental_roformer_static_compiled_demix"] = bool(out["experimental_roformer_static_compiled_demix"])

@@ -22,10 +22,18 @@ class TestPerformanceParams:
         assert perf["experimental_roformer_fast_norm"] is False
         assert perf["experimental_roformer_grouped_band_split"] is False
         assert perf["experimental_roformer_grouped_mask_estimator"] is False
+        assert perf["experimental_roformer_grouped_weight_cache"] is False
+        assert perf["experimental_roformer_chunk_gather_batching"] is False
         assert perf["experimental_roformer_fused_overlap_add"] is False
+        assert perf["experimental_roformer_ola_simd_tuning"] is False
         assert perf["experimental_mlx_stream_pipeline"] is False
         assert perf["experimental_roformer_compile_fullgraph"] is False
         assert perf["experimental_compile_model_forward"] is False
+        assert perf["experimental_mdxc_defer_batch_eval"] is False
+        assert perf["experimental_mdxc_precompute_gather_idx"] is False
+        assert perf["experimental_demucs_apply_concat_batching"] is False
+        assert perf["experimental_demucs_wiener_preallocate_output"] is False
+        assert perf["experimental_demucs_gn_glu_multigroup"] is False
         assert perf["experimental_vr_device_residency"] is False
         assert perf["experimental_compile_shapeless"] is False
         assert perf["experimental_roformer_static_compiled_demix"] is False

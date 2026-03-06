@@ -3,10 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from threading import Lock
 from typing import Any
 
 import mlx.core as mx
+
+
+def _overlap_add_simd_tuning_enabled() -> bool:
+    flag = os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING", "")
+    return str(flag).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_overlap_add_threadgroup_size(span_len: int) -> int:
+    return 256 if int(span_len) >= 256 else max(1, int(span_len))
+
+
+def _simd_aligned_overlap_add_threadgroup_size(span_len: int) -> int:
+    clamped = min(256, max(32, int(span_len)))
+    return ((clamped + 31) // 32) * 32
+
+
+def _select_overlap_add_threadgroup_size(span_len: int) -> int:
+    if _overlap_add_simd_tuning_enabled():
+        return _simd_aligned_overlap_add_threadgroup_size(span_len)
+    return _legacy_overlap_add_threadgroup_size(span_len)
 
 
 _METAL_WEIGHTED_ACCUM_SOURCE = r'''
@@ -143,10 +164,15 @@ class OverlapAddFusionCache:
         num_chunks = int(weighted.shape[0])
         num_sc = int(num_stems) * int(channels)
         weighted_sc = mx.reshape(weighted, (num_chunks, num_sc, int(safe_len)))
+        window_in = window_safe
+        if _overlap_add_simd_tuning_enabled():
+            # Avoid hidden per-dispatch copies under ensure_row_contiguous.
+            weighted_sc = mx.contiguous(weighted_sc)
+            window_in = mx.contiguous(window_safe)
         starts_mx = mx.array(rel_starts, dtype=mx.int32)
         params = mx.array([num_chunks, int(safe_len), int(span_len), num_sc], dtype=mx.int32)
 
-        tgx = 256 if int(span_len) >= 256 else max(1, int(span_len))
+        tgx = _select_overlap_add_threadgroup_size(span_len)
         weighted_out = kernel_weighted(
             inputs=[weighted_sc, starts_mx, params],
             grid=(int(span_len), int(num_sc), 1),
@@ -156,7 +182,7 @@ class OverlapAddFusionCache:
             init_value=0,
         )[0]
         counter_out = kernel_counter(
-            inputs=[window_safe, starts_mx, params],
+            inputs=[window_in, starts_mx, params],
             grid=(int(span_len), 1, 1),
             threadgroup=(int(tgx), 1, 1),
             output_shapes=[(int(span_len),)],

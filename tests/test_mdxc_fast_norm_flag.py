@@ -15,12 +15,13 @@ class _NoopLogger:
 
 
 def _run_load_model_with_flag(monkeypatch, enabled: bool, grouped: bool = False, compile_fullgraph: bool = False) -> dict:
-    seen_env = {"value": None, "grouped": None, "mask": None, "fullgraph": None}
+    seen_env = {"value": None, "grouped": None, "mask": None, "ola_tuning": None, "fullgraph": None}
 
     def fake_loader(*, model_path, config):
         seen_env["value"] = mdxc_mod.os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_FAST_NORM")
         seen_env["grouped"] = mdxc_mod.os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_BAND_SPLIT")
         seen_env["mask"] = mdxc_mod.os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_MASK_ESTIMATOR")
+        seen_env["ola_tuning"] = mdxc_mod.os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING")
         seen_env["fullgraph"] = mdxc_mod.os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_COMPILE_FULLGRAPH")
         return (lambda x: x), "bs_roformer"
 
@@ -34,6 +35,7 @@ def _run_load_model_with_flag(monkeypatch, enabled: bool, grouped: bool = False,
     sep.experimental_roformer_static_compiled_demix = False
     sep.experimental_roformer_grouped_band_split = bool(grouped)
     sep.experimental_roformer_grouped_mask_estimator = bool(grouped)
+    sep.experimental_roformer_ola_simd_tuning = bool(grouped)
     sep.experimental_roformer_compile_fullgraph = bool(compile_fullgraph)
     sep.model_path = "/tmp/fake.ckpt"
     sep.model_data = {}
@@ -56,9 +58,9 @@ def test_mdxc_load_model_sets_roformer_grouped_flags(monkeypatch):
     seen = _run_load_model_with_flag(monkeypatch, enabled=False, grouped=True)
     assert seen["grouped"] == "1"
     assert seen["mask"] == "1"
+    assert seen["ola_tuning"] == "1"
 
 
 def test_mdxc_load_model_sets_roformer_compile_fullgraph_flag(monkeypatch):
     seen = _run_load_model_with_flag(monkeypatch, enabled=False, compile_fullgraph=True)
     assert seen["fullgraph"] == "1"
-

@@ -523,6 +523,43 @@ class BandSplit(nn.Module):
             self._band_module_names.append(module_name)
             grouped[int(dim_in)].append(i)
         self._grouped_band_indices = tuple((dim_in, tuple(indices)) for dim_in, indices in grouped.items())
+        self.use_grouped_weight_cache = env_enabled(
+            "MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_WEIGHT_CACHE",
+            default_value=False,
+        )
+        self._grouped_pack_cache: dict[tuple[int, ...], dict[str, object]] = {}
+
+    def _get_grouped_pack(self, band_indices: tuple[int, ...]) -> dict[str, object]:
+        modules = [getattr(self, self._band_module_names[idx]) for idx in band_indices]
+        signature_items: list[int] = []
+        for module in modules:
+            signature_items.append(id(module.norm.weight))
+            signature_items.append(id(module.linear.weight))
+            bias = getattr(module.linear, "bias", None)
+            signature_items.append(id(bias) if bias is not None else 0)
+        signature = tuple(signature_items)
+
+        if self.use_grouped_weight_cache:
+            cached = self._grouped_pack_cache.get(band_indices)
+            if cached is not None and cached.get("signature") == signature:
+                return cached
+
+        norm_weights = mx.stack([module.norm.weight for module in modules], axis=0)
+        linear_weights = mx.stack([module.linear.weight for module in modules], axis=0)
+        biases = [getattr(module.linear, "bias", None) for module in modules]
+        has_bias = all(bias is not None for bias in biases)
+        linear_bias = mx.stack(biases, axis=0) if has_bias else None
+        packed = {
+            "signature": signature,
+            "eps": float(modules[0].norm.eps),
+            "scale": float(modules[0].norm.scale),
+            "norm_weights": norm_weights,
+            "linear_weights": linear_weights,
+            "linear_bias": linear_bias,
+        }
+        if self.use_grouped_weight_cache:
+            self._grouped_pack_cache[band_indices] = packed
+        return packed
 
     def _forward_grouped(self, splits: list[mx.array]) -> mx.array:
         outs: list[mx.array | None] = [None] * self.num_bands
@@ -534,28 +571,19 @@ class BandSplit(nn.Module):
                 outs[band_idx] = to_feature(splits[band_idx])
                 continue
 
-            modules = [getattr(self, self._band_module_names[idx]) for idx in band_indices]
             grouped_input = mx.stack([splits[idx] for idx in band_indices], axis=2)  # (B, T, G, D)
+            packed = self._get_grouped_pack(band_indices)
 
             # Grouped L2 norm equivalent to L2Norm module math.
-            eps = float(modules[0].norm.eps)
-            scale = float(modules[0].norm.scale)
+            eps = float(packed["eps"])
+            scale = float(packed["scale"])
             norm = mx.sqrt(mx.sum(grouped_input * grouped_input, axis=-1, keepdims=True))
             denom = mx.maximum(norm, eps)
             normalized = (grouped_input / denom) * scale
-            norm_weights = mx.stack([module.norm.weight for module in modules], axis=0)
+            norm_weights = packed["norm_weights"]
             normalized = normalized * norm_weights[None, None, :, :]
-
-            linear_weights = mx.stack([module.linear.weight for module in modules], axis=0)
-            biases = []
-            has_bias = True
-            for module in modules:
-                bias = getattr(module.linear, "bias", None)
-                if bias is None:
-                    has_bias = False
-                biases.append(bias)
-            linear_bias = mx.stack(biases, axis=0) if has_bias else None
-
+            linear_weights = packed["linear_weights"]
+            linear_bias = packed["linear_bias"]
             grouped_out = batched_group_linear(normalized, linear_weights, linear_bias)
             for local_idx, band_idx in enumerate(band_indices):
                 outs[int(band_idx)] = grouped_out[:, :, local_idx, :]
@@ -616,11 +644,17 @@ class MaskEstimator(nn.Module):
             self._mlp_module_names.append(module_name)
             grouped[int(dim_in)].append(i)
         self._grouped_band_indices = tuple((dim_in, tuple(indices)) for dim_in, indices in grouped.items())
+        self.use_grouped_weight_cache = env_enabled(
+            "MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_WEIGHT_CACHE",
+            default_value=False,
+        )
+        self._grouped_mlp_pack_cache: dict[tuple[int, ...], dict[str, object] | None] = {}
 
-    @staticmethod
-    def _run_grouped_mlp(grouped_input: mx.array, mlps: list[nn.Module]) -> mx.array | None:
+    def _get_grouped_mlp_pack(self, band_indices: tuple[int, ...]) -> dict[str, object] | None:
+        mlps = [getattr(self, self._mlp_module_names[idx]) for idx in band_indices]
         if not mlps:
             return None
+
         layer_lists = [getattr(mlp, "layers", None) for mlp in mlps]
         if any(layers is None for layers in layer_lists):
             return None
@@ -628,7 +662,8 @@ class MaskEstimator(nn.Module):
         if any(len(layers) != depth for layers in layer_lists):
             return None
 
-        x = grouped_input
+        metadata: list[tuple[str, list[mx.array] | None, list[mx.array | None] | None, bool]] = []
+        signature_items: list[int] = []
         for layer_idx in range(depth):
             proto = layer_lists[0][layer_idx]
             proto_name = proto.__class__.__name__.lower()
@@ -642,17 +677,49 @@ class MaskEstimator(nn.Module):
                     if weight is None:
                         return None
                     weights.append(weight)
+                    signature_items.append(id(weight))
                     bias = getattr(layer, "bias", None)
                     if bias is None:
                         has_bias = False
                     biases.append(bias)
-                linear_weights = mx.stack(weights, axis=0)
-                linear_bias = mx.stack(biases, axis=0) if has_bias else None
-                x = batched_group_linear(x, linear_weights, linear_bias)
+                    signature_items.append(id(bias) if bias is not None else 0)
+                metadata.append(("linear", weights, biases, has_bias))
             elif proto_name == "tanh":
-                x = mx.tanh(x)
+                metadata.append(("tanh", None, None, False))
             else:
                 return None
+
+        signature = tuple(signature_items)
+        if self.use_grouped_weight_cache:
+            cached = self._grouped_mlp_pack_cache.get(band_indices)
+            if cached is not None and cached.get("signature") == signature:
+                return cached
+
+        ops: list[dict[str, object]] = []
+        for kind, weights, biases, has_bias in metadata:
+            if kind == "tanh":
+                ops.append({"kind": "tanh"})
+                continue
+            assert weights is not None
+            linear_weights = mx.stack(weights, axis=0)
+            linear_bias = mx.stack(biases, axis=0) if has_bias and biases is not None else None
+            ops.append({"kind": "linear", "weights": linear_weights, "bias": linear_bias})
+
+        packed = {"signature": signature, "ops": ops}
+        if self.use_grouped_weight_cache:
+            self._grouped_mlp_pack_cache[band_indices] = packed
+        return packed
+
+    def _run_grouped_mlp(self, grouped_input: mx.array, band_indices: tuple[int, ...]) -> mx.array | None:
+        packed = self._get_grouped_mlp_pack(band_indices)
+        if packed is None:
+            return None
+        x = grouped_input
+        for op in packed["ops"]:
+            if op["kind"] == "tanh":
+                x = mx.tanh(x)
+            else:
+                x = batched_group_linear(x, op["weights"], op["bias"])
         return x
 
     def __call__(self, x):
@@ -670,9 +737,8 @@ class MaskEstimator(nn.Module):
                     outs_by_band[band_idx] = freq_out[0] * mx.sigmoid(freq_out[1])
                     continue
 
-                mlps = [getattr(self, self._mlp_module_names[idx]) for idx in band_indices]
                 grouped_input = mx.stack([x_bands[idx] for idx in band_indices], axis=2)  # (B, T, G, D)
-                grouped_out = self._run_grouped_mlp(grouped_input, mlps)
+                grouped_out = self._run_grouped_mlp(grouped_input, band_indices)
                 if grouped_out is None:
                     # Conservative fallback for unsupported mixed module structures.
                     for band_idx in band_indices:
@@ -1033,59 +1099,80 @@ class BSRoformerMLX(nn.Module):
             w = np.hanning(chunk_len).astype(np.float32)
         else:
             w = np.ones((chunk_len,), dtype=np.float32)
+        w_mx = mx.array(w, dtype=mx.float32)
+        w_view_single = w_mx.reshape(1, 1, -1)
+        w_view_multi = w_mx.reshape(1, 1, 1, -1)
 
-        # Accumulate in numpy for correctness and simplicity
+        # Keep accumulation on-device to avoid per-batch host transfers.
         if self.num_stems == 1:
-            out_acc = np.zeros((B, C, total_len), dtype=np.float32)
-            w_acc = np.zeros((1, 1, total_len), dtype=np.float32)
+            out_acc = mx.zeros((B, C, total_len), dtype=mx.float32)
+            w_acc = mx.zeros((1, 1, total_len), dtype=mx.float32)
         else:
-            out_acc = np.zeros((B, self.num_stems, C, total_len), dtype=np.float32)
-            w_acc = np.zeros((1, 1, 1, total_len), dtype=np.float32)
+            out_acc = mx.zeros((B, self.num_stems, C, total_len), dtype=mx.float32)
+            w_acc = mx.zeros((1, 1, 1, total_len), dtype=mx.float32)
 
         batch_hops = int(batch_hops)
         if batch_hops <= 0:
             raise ValueError(f"batch_hops must be >= 1, got {batch_hops}")
+        eval_flush_interval = max(8, batch_hops * 2)
+        pending_updates = 0
 
         # Precompute all starts to avoid recomputing in the loop
         starts = [hop * hop_len for hop in range(n_hops)]
+        arange_chunk = mx.arange(chunk_len, dtype=mx.int32)
+        all_starts_mx = mx.array(starts, dtype=mx.int32)
+        all_gather_idx = all_starts_mx[:, None] + arange_chunk[None, :]
+        use_gather_batching = env_enabled(
+            "MLX_AUDIO_SEPARATOR_ROFORMER_CHUNK_GATHER_BATCHING",
+            default_value=False,
+        )
 
         for i in range(0, n_hops, batch_hops):
             hops = list(range(i, min(i + batch_hops, n_hops)))
+            H = len(hops)
 
             # Stack chunks along batch dimension: (B*H, C, L)
-            chunk_list = [padded[..., starts[h]:starts[h] + chunk_len] for h in hops]
-            chunk_batch = mx.concatenate(chunk_list, axis=0)
+            if use_gather_batching:
+                try:
+                    gather_idx = all_gather_idx[i : i + H]
+                    chunk_batch = mx.transpose(padded[:, :, gather_idx], (2, 0, 1, 3))
+                    chunk_batch = chunk_batch.reshape(H * B, C, chunk_len)
+                except Exception:
+                    chunk_list = [padded[..., starts[h]:starts[h] + chunk_len] for h in hops]
+                    chunk_batch = mx.concatenate(chunk_list, axis=0)
+            else:
+                chunk_list = [padded[..., starts[h]:starts[h] + chunk_len] for h in hops]
+                chunk_batch = mx.concatenate(chunk_list, axis=0)
 
             # Run model once for the whole batch
             batch_out = self(chunk_batch)
-            mx.eval(batch_out)
-            batch_np = np.array(batch_out, dtype=np.float32)
-
-            # Unstack: (H, B, ...) so we can accumulate in hop order
-            H = len(hops)
             if self.num_stems == 1:
-                # batch_np: (B*H, C, L) -> (H, B, C, L)
-                batch_np = batch_np.reshape(H, B, C, chunk_len)
+                # batch_out: (B*H, C, L) -> (H, B, C, L)
+                batch_out = batch_out.reshape(H, B, C, chunk_len)
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
-                    out_acc[..., start:end] += batch_np[j] * w[None, None, :]
-                    w_acc[..., start:end] += w[None, None, :]
+                    out_acc = out_acc.at[..., start:end].add(batch_out[j] * w_view_single)
+                    w_acc = w_acc.at[..., start:end].add(w_view_single)
             else:
-                # batch_np: (B*H, S, C, L) -> (H, B, S, C, L)
-                batch_np = batch_np.reshape(H, B, self.num_stems, C, chunk_len)
+                # batch_out: (B*H, S, C, L) -> (H, B, S, C, L)
+                batch_out = batch_out.reshape(H, B, self.num_stems, C, chunk_len)
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
-                    out_acc[..., start:end] += batch_np[j] * w[None, None, None, :]
-                    w_acc[..., start:end] += w[None, None, None, :]
+                    out_acc = out_acc.at[..., start:end].add(batch_out[j] * w_view_multi)
+                    w_acc = w_acc.at[..., start:end].add(w_view_multi)
 
+            pending_updates += H
+            if pending_updates >= eval_flush_interval:
+                mx.eval(out_acc, w_acc)
+                pending_updates = 0
 
-        denom = np.maximum(w_acc, 1e-8)
-        out_acc = out_acc / denom
+        mx.eval(out_acc, w_acc)
+        out_acc = out_acc / mx.maximum(w_acc, 1e-8)
         out_acc = out_acc[..., :T]
-
-        return mx.array(out_acc)
+        mx.eval(out_acc)
+        return out_acc
 
     def separate(self, wav: mx.array, *, sr: int = 44100) -> mx.array:
         """

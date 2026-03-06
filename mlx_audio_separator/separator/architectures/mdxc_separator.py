@@ -46,8 +46,17 @@ class MDXCSeparator(CommonSeparator):
         self.experimental_roformer_grouped_mask_estimator = bool(
             self.performance_params.get("experimental_roformer_grouped_mask_estimator", False)
         )
+        self.experimental_roformer_grouped_weight_cache = bool(
+            self.performance_params.get("experimental_roformer_grouped_weight_cache", False)
+        )
+        self.experimental_roformer_chunk_gather_batching = bool(
+            self.performance_params.get("experimental_roformer_chunk_gather_batching", False)
+        )
         self.experimental_roformer_fused_overlap_add = bool(
             self.performance_params.get("experimental_roformer_fused_overlap_add", False)
+        )
+        self.experimental_roformer_ola_simd_tuning = bool(
+            self.performance_params.get("experimental_roformer_ola_simd_tuning", False)
         )
         self.experimental_mlx_stream_pipeline = bool(
             self.performance_params.get("experimental_mlx_stream_pipeline", False)
@@ -57,6 +66,12 @@ class MDXCSeparator(CommonSeparator):
         )
         self.experimental_compile_model_forward = bool(
             self.performance_params.get("experimental_compile_model_forward", False)
+        )
+        self.experimental_mdxc_defer_batch_eval = bool(
+            self.performance_params.get("experimental_mdxc_defer_batch_eval", False)
+        )
+        self.experimental_mdxc_precompute_gather_idx = bool(
+            self.performance_params.get("experimental_mdxc_precompute_gather_idx", False)
         )
         self.experimental_compile_shapeless = bool(
             self.performance_params.get("experimental_compile_shapeless", False)
@@ -96,6 +111,15 @@ class MDXCSeparator(CommonSeparator):
         )
         os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_MASK_ESTIMATOR"] = (
             "1" if getattr(self, "experimental_roformer_grouped_mask_estimator", False) else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_WEIGHT_CACHE"] = (
+            "1" if getattr(self, "experimental_roformer_grouped_weight_cache", False) else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_CHUNK_GATHER_BATCHING"] = (
+            "1" if getattr(self, "experimental_roformer_chunk_gather_batching", False) else "0"
+        )
+        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING"] = (
+            "1" if getattr(self, "experimental_roformer_ola_simd_tuning", False) else "0"
         )
         os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_COMPILE_FULLGRAPH"] = (
             "1" if getattr(self, "experimental_roformer_compile_fullgraph", False) else "0"
@@ -146,6 +170,7 @@ class MDXCSeparator(CommonSeparator):
         use_pipeline = bool(getattr(self, "experimental_mlx_stream_pipeline", False))
         stream = getattr(self, "_pipeline_stream", None)
         if use_pipeline and stream is not None:
+            # Stream pipeline depends on explicit eval/synchronize boundaries.
             with mx.stream(stream):
                 out = run_fn(batch)
                 if out.ndim == 3:
@@ -157,10 +182,37 @@ class MDXCSeparator(CommonSeparator):
         out = run_fn(batch)
         if out.ndim == 3:
             out = mx.expand_dims(out, axis=1)
-        mx.eval(out)
+        if not bool(getattr(self, "experimental_mdxc_defer_batch_eval", False)):
+            mx.eval(out)
         return out
 
-    def _run_fixed_compiled_batch(self, mix_mx, starts, start_idx, current_batch_size, chunk_size, arange_chunk):
+    @staticmethod
+    def _compute_gather_idx(
+        starts_batch: list[int],
+        arange_chunk: mx.array,
+        *,
+        precomputed_gather_idx: mx.array | None = None,
+        start_to_row: dict[int, int] | None = None,
+    ) -> mx.array:
+        if precomputed_gather_idx is not None and start_to_row:
+            row_indices = [start_to_row.get(int(start), -1) for start in starts_batch]
+            if row_indices and min(row_indices) >= 0:
+                row_idx_mx = mx.array(row_indices, dtype=mx.int32)
+                return precomputed_gather_idx[row_idx_mx]
+        starts_mx = mx.array(starts_batch, dtype=mx.int32)
+        return starts_mx[:, None] + arange_chunk[None, :]
+
+    def _run_fixed_compiled_batch(
+        self,
+        mix_mx,
+        starts,
+        start_idx,
+        current_batch_size,
+        chunk_size,
+        arange_chunk,
+        precomputed_gather_idx=None,
+        start_to_row=None,
+    ):
         starts_batch = starts[start_idx : start_idx + current_batch_size]
         if not starts_batch:
             return None, []
@@ -169,8 +221,12 @@ class MDXCSeparator(CommonSeparator):
         if current_batch_size < batch_size:
             padded_starts.extend([starts_batch[-1]] * (batch_size - current_batch_size))
 
-        starts_mx = mx.array(padded_starts, dtype=mx.int32)
-        gather_idx = starts_mx[:, None] + arange_chunk[None, :]
+        gather_idx = self._compute_gather_idx(
+            padded_starts,
+            arange_chunk,
+            precomputed_gather_idx=precomputed_gather_idx,
+            start_to_row=start_to_row,
+        )
         batch = mx.transpose(mix_mx[:, gather_idx], (1, 0, 2))
 
         if current_batch_size < batch_size:
@@ -376,6 +432,8 @@ class MDXCSeparator(CommonSeparator):
         chunk_size: int,
         window_mx: mx.array,
         num_stems: int,
+        precomputed_gather_idx: mx.array | None = None,
+        start_to_row: dict[int, int] | None = None,
     ) -> np.ndarray:
         """Run chunked inference with vectorized gather and batched span overlap-add."""
         channels, total_samples = int(mix_mx.shape[0]), int(mix_mx.shape[1])
@@ -407,6 +465,8 @@ class MDXCSeparator(CommonSeparator):
                     current_batch_size=current_batch_size,
                     chunk_size=chunk_size,
                     arange_chunk=arange_chunk,
+                    precomputed_gather_idx=precomputed_gather_idx,
+                    start_to_row=start_to_row,
                 )
                 if out_mx is None or not starts_batch:
                     continue
@@ -416,8 +476,12 @@ class MDXCSeparator(CommonSeparator):
                 if not starts_batch:
                     continue
 
-                starts_mx = mx.array(starts_batch, dtype=mx.int32)
-                gather_idx = starts_mx[:, None] + arange_chunk[None, :]
+                gather_idx = self._compute_gather_idx(
+                    starts_batch,
+                    arange_chunk,
+                    precomputed_gather_idx=precomputed_gather_idx,
+                    start_to_row=start_to_row,
+                )
                 batch = mx.transpose(mix_mx[:, gather_idx], (1, 0, 2))
 
                 out_mx = self._run_model_callable(self.model_run, batch)
@@ -542,6 +606,13 @@ class MDXCSeparator(CommonSeparator):
             starts = self._chunk_starts(mix.shape[1], chunk_size, step)
             num_chunks = len(starts)
             self.logger.debug(f"Processing {num_chunks} chunks")
+            arange_chunk = mx.arange(int(chunk_size), dtype=mx.int32)
+            precomputed_gather_idx = None
+            start_to_row = None
+            if self.experimental_mdxc_precompute_gather_idx and starts:
+                starts_mx = mx.array(starts, dtype=mx.int32)
+                precomputed_gather_idx = starts_mx[:, None] + arange_chunk[None, :]
+                start_to_row = {int(start): idx for idx, start in enumerate(starts)}
 
             used_static_path = False
             if (
@@ -581,6 +652,8 @@ class MDXCSeparator(CommonSeparator):
                     chunk_size=chunk_size,
                     window_mx=window_mx,
                     num_stems=num_stems,
+                    precomputed_gather_idx=precomputed_gather_idx,
+                    start_to_row=start_to_row,
                 )
             elif not used_static_path:
                 # Initialize accumulators
@@ -591,7 +664,6 @@ class MDXCSeparator(CommonSeparator):
                 batch_size = max(1, int(self.batch_size))
                 eval_flush_interval = max(8, batch_size * 2)
                 pending_updates = 0
-                arange_chunk = mx.arange(int(chunk_size), dtype=mx.int32)
 
                 def maybe_eval(force=False):
                     nonlocal pending_updates, result, counter
@@ -613,14 +685,27 @@ class MDXCSeparator(CommonSeparator):
                             current_batch_size=current_batch_size,
                             chunk_size=chunk_size,
                             arange_chunk=arange_chunk,
+                            precomputed_gather_idx=precomputed_gather_idx,
+                            start_to_row=start_to_row,
                         )
                     else:
                         starts_batch = starts[start_idx : start_idx + current_batch_size]
-                        parts_batch = [
-                            mix_mlx[:, write_start : write_start + chunk_size]
-                            for write_start in starts_batch
-                        ]
-                        batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
+                        if not starts_batch:
+                            return
+                        if precomputed_gather_idx is not None and start_to_row:
+                            gather_idx = self._compute_gather_idx(
+                                starts_batch,
+                                arange_chunk,
+                                precomputed_gather_idx=precomputed_gather_idx,
+                                start_to_row=start_to_row,
+                            )
+                            batch = mx.transpose(mix_mlx[:, gather_idx], (1, 0, 2))
+                        else:
+                            parts_batch = [
+                                mix_mlx[:, write_start : write_start + chunk_size]
+                                for write_start in starts_batch
+                            ]
+                            batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
                         x = self._run_model_callable(model_run, batch)
 
                     if not starts_batch:
