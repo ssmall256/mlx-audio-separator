@@ -609,7 +609,7 @@ class MDXCSeparator(CommonSeparator):
             arange_chunk = mx.arange(int(chunk_size), dtype=mx.int32)
             precomputed_gather_idx = None
             start_to_row = None
-            if self.experimental_mdxc_precompute_gather_idx and starts:
+            if getattr(self, "experimental_mdxc_precompute_gather_idx", False) and starts:
                 starts_mx = mx.array(starts, dtype=mx.int32)
                 precomputed_gather_idx = starts_mx[:, None] + arange_chunk[None, :]
                 start_to_row = {int(start): idx for idx, start in enumerate(starts)}
