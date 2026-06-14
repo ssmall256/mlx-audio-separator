@@ -25,6 +25,9 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from mlx_spectro import get_transform_mlx
+from packaging import version
+
+_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
 
 # Helper functions
 
@@ -1152,16 +1155,48 @@ class BSRoformerMLX(nn.Module):
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
-                    out_acc = out_acc.at[..., start:end].add(batch_out[j] * w_view_single)
-                    w_acc = w_acc.at[..., start:end].add(w_view_single)
+                    out_update = batch_out[j] * w_view_single
+                    if _USE_SAFE_SLICE_ACCUMULATION:
+                        start_mx = mx.array([start])
+                        out_acc = mx.slice_update(
+                            out_acc,
+                            out_acc[..., start:end] + out_update,
+                            start_mx,
+                            axes=(out_acc.ndim - 1,),
+                        )
+                        w_acc = mx.slice_update(
+                            w_acc,
+                            w_acc[..., start:end] + w_view_single,
+                            start_mx,
+                            axes=(w_acc.ndim - 1,),
+                        )
+                    else:
+                        out_acc = out_acc.at[..., start:end].add(out_update)
+                        w_acc = w_acc.at[..., start:end].add(w_view_single)
             else:
                 # batch_out: (B*H, S, C, L) -> (H, B, S, C, L)
                 batch_out = batch_out.reshape(H, B, self.num_stems, C, chunk_len)
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
-                    out_acc = out_acc.at[..., start:end].add(batch_out[j] * w_view_multi)
-                    w_acc = w_acc.at[..., start:end].add(w_view_multi)
+                    out_update = batch_out[j] * w_view_multi
+                    if _USE_SAFE_SLICE_ACCUMULATION:
+                        start_mx = mx.array([start])
+                        out_acc = mx.slice_update(
+                            out_acc,
+                            out_acc[..., start:end] + out_update,
+                            start_mx,
+                            axes=(out_acc.ndim - 1,),
+                        )
+                        w_acc = mx.slice_update(
+                            w_acc,
+                            w_acc[..., start:end] + w_view_multi,
+                            start_mx,
+                            axes=(w_acc.ndim - 1,),
+                        )
+                    else:
+                        out_acc = out_acc.at[..., start:end].add(out_update)
+                        w_acc = w_acc.at[..., start:end].add(w_view_multi)
 
             pending_updates += H
             if pending_updates >= eval_flush_interval:

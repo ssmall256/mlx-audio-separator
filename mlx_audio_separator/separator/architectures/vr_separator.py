@@ -10,10 +10,13 @@ import time
 
 import mlx.core as mx
 import numpy as np
+from packaging import version
 from tqdm import tqdm
 
 from mlx_audio_separator.separator.common_separator import CommonSeparator
 from mlx_audio_separator.separator.models.vr import spec_utils
+
+_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
 
 
 class VRSeparator(CommonSeparator):
@@ -248,7 +251,16 @@ class VRSeparator(CommonSeparator):
 
                 write_start = i * roi_size
                 write_end = write_start + int(pred.shape[2])
-                mask_mx = mask_mx.at[:, :, write_start:write_end].add(pred)
+                if _USE_SAFE_SLICE_ACCUMULATION:
+                    start = mx.array([write_start])
+                    mask_mx = mx.slice_update(
+                        mask_mx,
+                        mask_mx[:, :, write_start:write_end] + pred,
+                        start,
+                        axes=(2,),
+                    )
+                else:
+                    mask_mx = mask_mx.at[:, :, write_start:write_end].add(pred)
                 pending_updates += 1
 
                 if pending_updates >= eval_flush_interval:

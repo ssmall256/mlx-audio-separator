@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.5 - 2026-06-13
+
+### Fixed
+
+- Work around MLX 0.31.2 contiguous slice-update corruption in split-mode and chunked overlap-add accumulators by using explicit `mx.slice_update()` accumulation on affected MLX versions.
+
 ## 0.1.4 - 2026-03-06
 
 ### Changed

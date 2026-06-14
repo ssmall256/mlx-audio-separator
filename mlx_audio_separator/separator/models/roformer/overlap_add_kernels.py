@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import os
+from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
 
 import mlx.core as mx
+from packaging import version
+
+_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
 
 
 def _overlap_add_simd_tuning_enabled() -> bool:
@@ -89,8 +92,23 @@ def _accumulate_span_python(
     for local_idx, rel_start in enumerate(rel_starts):
         write_start = int(rel_start)
         write_end = write_start + int(safe_len)
-        span_result = span_result.at[:, :, write_start:write_end].add(weighted[local_idx])
-        span_counter = span_counter.at[write_start:write_end].add(window_safe)
+        if _USE_SAFE_SLICE_ACCUMULATION:
+            start = mx.array([write_start])
+            span_result = mx.slice_update(
+                span_result,
+                span_result[:, :, write_start:write_end] + weighted[local_idx],
+                start,
+                axes=(2,),
+            )
+            span_counter = mx.slice_update(
+                span_counter,
+                span_counter[write_start:write_end] + window_safe,
+                start,
+                axes=(0,),
+            )
+        else:
+            span_result = span_result.at[:, :, write_start:write_end].add(weighted[local_idx])
+            span_counter = span_counter.at[write_start:write_end].add(window_safe)
     return span_result, span_counter
 
 
@@ -266,8 +284,23 @@ class OverlapAddFusionCache:
                 for local_idx, rel_start in enumerate(rel_const):
                     write_start = int(rel_start)
                     write_end = write_start + int(safe_len)
-                    span_result = span_result.at[:, :, write_start:write_end].add(weighted_in[local_idx])
-                    span_counter = span_counter.at[write_start:write_end].add(window_in)
+                    if _USE_SAFE_SLICE_ACCUMULATION:
+                        start = mx.array([write_start])
+                        span_result = mx.slice_update(
+                            span_result,
+                            span_result[:, :, write_start:write_end] + weighted_in[local_idx],
+                            start,
+                            axes=(2,),
+                        )
+                        span_counter = mx.slice_update(
+                            span_counter,
+                            span_counter[write_start:write_end] + window_in,
+                            start,
+                            axes=(0,),
+                        )
+                    else:
+                        span_result = span_result.at[:, :, write_start:write_end].add(weighted_in[local_idx])
+                        span_counter = span_counter.at[write_start:write_end].add(window_in)
                 return span_result, span_counter
 
             try:

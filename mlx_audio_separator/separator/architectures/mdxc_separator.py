@@ -6,10 +6,13 @@ import time
 
 import mlx.core as mx
 import numpy as np
+from packaging import version
 from tqdm import tqdm
 
 from mlx_audio_separator.separator.common_separator import CommonSeparator, match_array_shapes, normalize
 from mlx_audio_separator.separator.models.roformer.overlap_add_kernels import OverlapAddFusionCache
+
+_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
 
 
 class MDXCSeparator(CommonSeparator):
@@ -304,8 +307,23 @@ class MDXCSeparator(CommonSeparator):
                 counter = mx.zeros((total_samples,), dtype=mx.float32)
                 for chunk_idx, write_start in enumerate(starts_arr.tolist()):
                     write_end = int(write_start) + int(safe_len)
-                    result = result.at[:, :, int(write_start) : write_end].add(weighted[chunk_idx])
-                    counter = counter.at[int(write_start) : write_end].add(window_safe)
+                    if _USE_SAFE_SLICE_ACCUMULATION:
+                        start = mx.array([int(write_start)])
+                        result = mx.slice_update(
+                            result,
+                            result[:, :, int(write_start) : write_end] + weighted[chunk_idx],
+                            start,
+                            axes=(2,),
+                        )
+                        counter = mx.slice_update(
+                            counter,
+                            counter[int(write_start) : write_end] + window_safe,
+                            start,
+                            axes=(0,),
+                        )
+                    else:
+                        result = result.at[:, :, int(write_start) : write_end].add(weighted[chunk_idx])
+                        counter = counter.at[int(write_start) : write_end].add(window_safe)
                 return result / mx.maximum(counter[None, None, :], mx.array(1e-10, dtype=mx.float32))
 
             compiled_demix = compile_fn(_demix_fn, shapeless=use_shapeless)
@@ -494,7 +512,6 @@ class MDXCSeparator(CommonSeparator):
             weighted = out_mx[..., :safe_len] * window_safe[None, None, None, :]  # (B,S,C,L)
             span_start = int(starts_batch[0])
             span_end = int(starts_batch[-1]) + safe_len
-            span_len = span_end - span_start
 
             span_result, span_counter = overlap_add_cache.accumulate_span(
                 weighted=weighted,
@@ -507,8 +524,23 @@ class MDXCSeparator(CommonSeparator):
                 use_compiled=use_fused_ola,
             )
 
-            result_mx = result_mx.at[:, :, span_start:span_end].add(span_result)
-            counter_mx = counter_mx.at[span_start:span_end].add(span_counter)
+            if _USE_SAFE_SLICE_ACCUMULATION:
+                start = mx.array([span_start])
+                result_mx = mx.slice_update(
+                    result_mx,
+                    result_mx[:, :, span_start:span_end] + span_result,
+                    start,
+                    axes=(2,),
+                )
+                counter_mx = mx.slice_update(
+                    counter_mx,
+                    counter_mx[span_start:span_end] + span_counter,
+                    start,
+                    axes=(0,),
+                )
+            else:
+                result_mx = result_mx.at[:, :, span_start:span_end].add(span_result)
+                counter_mx = counter_mx.at[span_start:span_end].add(span_counter)
             pending_updates += 1
 
             if pending_updates >= eval_flush_interval:
@@ -576,7 +608,7 @@ class MDXCSeparator(CommonSeparator):
             self._np_window_cache[chunk_size] = window_np
             self._mlx_window_cache[chunk_size] = window_mx
 
-        mix_mlx = mx.array(mix, dtype=mx.float32)
+        mix_mx = mx.array(mix, dtype=mx.float32)
         model_run = self.model_run
 
         if mix.shape[1] < chunk_size:
@@ -586,7 +618,7 @@ class MDXCSeparator(CommonSeparator):
             counter = mx.zeros(req_shape, dtype=mx.float32)
 
             # Short audio: single chunk
-            part = mx.expand_dims(mix_mlx, axis=0)
+            part = mx.expand_dims(mix_mx, axis=0)
             x = model_run(part)
             if x.ndim == 3:
                 x = mx.expand_dims(x, axis=1)
@@ -595,8 +627,23 @@ class MDXCSeparator(CommonSeparator):
             safe_len = min(mix.shape[1], x.shape[-1], window_mx.shape[0])
             if safe_len > 0:
                 weighted_chunk = x[..., :safe_len] * window_mx[:safe_len]
-                result = result.at[..., :safe_len].add(weighted_chunk)
-                counter = counter.at[..., :safe_len].add(window_mx[:safe_len])
+                start = mx.array([0])
+                if _USE_SAFE_SLICE_ACCUMULATION:
+                    result = mx.slice_update(
+                        result,
+                        result[..., :safe_len] + weighted_chunk,
+                        start,
+                        axes=(2,),
+                    )
+                    counter = mx.slice_update(
+                        counter,
+                        counter[..., :safe_len] + window_mx[:safe_len],
+                        start,
+                        axes=(2,),
+                    )
+                else:
+                    result = result.at[..., :safe_len].add(weighted_chunk)
+                    counter = counter.at[..., :safe_len].add(window_mx[:safe_len])
 
             inferenced_outputs = result / mx.maximum(counter, mx.array(1e-10))
             inferenced_outputs_np = np.array(inferenced_outputs, dtype=np.float32, copy=False)
@@ -629,7 +676,7 @@ class MDXCSeparator(CommonSeparator):
                         )
                         self._logged_static_shapeless_disable = True
                     inferenced_outputs_np = self._run_roformer_static_compiled_demix(
-                        mix_mx=mix_mlx,
+                        mix_mx=mix_mx,
                         starts=starts,
                         chunk_size=chunk_size,
                         window_mx=window_mx,
@@ -647,7 +694,7 @@ class MDXCSeparator(CommonSeparator):
             if not used_static_path and self.experimental_vectorized_chunking:
                 self.logger.info("Using experimental vectorized MDXC chunking path.")
                 inferenced_outputs_np = self._run_chunked_model_vectorized(
-                    mix_mx=mix_mlx,
+                    mix_mx=mix_mx,
                     starts=starts,
                     chunk_size=chunk_size,
                     window_mx=window_mx,
@@ -671,7 +718,7 @@ class MDXCSeparator(CommonSeparator):
                         mx.eval(result, counter)
                         pending_updates = 0
 
-                def run_batch(start_idx: int, current_batch_size: int):
+                def run_batch(start_idx: int, current_batch_size: int, mix_mx=mix_mx):
                     nonlocal result, counter, pending_updates
                     if current_batch_size <= 0:
                         return
@@ -679,7 +726,7 @@ class MDXCSeparator(CommonSeparator):
 
                     if self._fixed_batch_compiled_forward and self._compiled_model_run is not None:
                         x, starts_batch = self._run_fixed_compiled_batch(
-                            mix_mx=mix_mlx,
+                            mix_mx=mix_mx,
                             starts=starts,
                             start_idx=start_idx,
                             current_batch_size=current_batch_size,
@@ -699,10 +746,10 @@ class MDXCSeparator(CommonSeparator):
                                 precomputed_gather_idx=precomputed_gather_idx,
                                 start_to_row=start_to_row,
                             )
-                            batch = mx.transpose(mix_mlx[:, gather_idx], (1, 0, 2))
+                            batch = mx.transpose(mix_mx[:, gather_idx], (1, 0, 2))
                         else:
                             parts_batch = [
-                                mix_mlx[:, write_start : write_start + chunk_size]
+                                mix_mx[:, write_start : write_start + chunk_size]
                                 for write_start in starts_batch
                             ]
                             batch = mx.stack(parts_batch, axis=0)  # (B, channels, chunk_size)
@@ -727,8 +774,23 @@ class MDXCSeparator(CommonSeparator):
                             channels=int(mix.shape[0]),
                             use_compiled=bool(getattr(self, "experimental_roformer_fused_overlap_add", False)),
                         )
-                        result = result.at[..., span_start:span_end].add(span_result)
-                        counter = counter.at[..., span_start:span_end].add(span_counter)
+                        if _USE_SAFE_SLICE_ACCUMULATION:
+                            start = mx.array([span_start])
+                            result = mx.slice_update(
+                                result,
+                                result[..., span_start:span_end] + span_result,
+                                start,
+                                axes=(2,),
+                            )
+                            counter = mx.slice_update(
+                                counter,
+                                counter[..., span_start:span_end] + span_counter,
+                                start,
+                                axes=(2,),
+                            )
+                        else:
+                            result = result.at[..., span_start:span_end].add(span_result)
+                            counter = counter.at[..., span_start:span_end].add(span_counter)
                         pending_updates += 1
 
                     maybe_eval()
@@ -746,7 +808,7 @@ class MDXCSeparator(CommonSeparator):
                 inferenced_outputs_np = np.array(inferenced_outputs, dtype=np.float32, copy=False)
                 del result, counter, inferenced_outputs
 
-        del mix_mlx
+        del mix_mx
         gc.collect()
 
         # Build output dictionary

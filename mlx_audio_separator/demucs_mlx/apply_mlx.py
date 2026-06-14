@@ -9,10 +9,12 @@ import typing as tp
 import warnings
 
 import mlx.core as mx
+from packaging import version
 
 from .mlx_utils import center_trim
 
 _WEIGHT_CACHE: dict[tuple[int, float, str], mx.array] = {}
+_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
 
 
 def _deterministic_accumulation_enabled() -> bool:
@@ -237,8 +239,24 @@ def apply_model(
                 offset = offsets[idx]
                 end = offset + segment_length
 
-                out = out.at[:, :, :, offset:end].add(weight_view * chunk_out)
-                sum_weight = sum_weight.at[offset:end].add(weight)
+                update = weight_view * chunk_out
+                if _USE_SAFE_SLICE_ACCUMULATION:
+                    start = mx.array([offset])
+                    out = mx.slice_update(
+                        out,
+                        out[:, :, :, offset:end] + update,
+                        start,
+                        axes=(3,),
+                    )
+                    sum_weight = mx.slice_update(
+                        sum_weight,
+                        sum_weight[offset:end] + weight,
+                        start,
+                        axes=(0,),
+                    )
+                else:
+                    out = out.at[:, :, :, offset:end].add(update)
+                    sum_weight = sum_weight.at[offset:end].add(weight)
                 pending_updates += 1
                 if deterministic_accum:
                     # Preserve update order for deterministic equivalence runs.
@@ -282,8 +300,24 @@ def apply_model(
                     end = offset + this_chunk_len
                     weight_slice = weight[:this_chunk_len]
                     w = weight_slice.reshape(1, 1, 1, -1)
-                    out = out.at[:, :, :, offset:end].add(w * chunk_out)
-                    sum_weight = sum_weight.at[offset:end].add(weight_slice)
+                    update = w * chunk_out
+                    if _USE_SAFE_SLICE_ACCUMULATION:
+                        start = mx.array([offset])
+                        out = mx.slice_update(
+                            out,
+                            out[:, :, :, offset:end] + update,
+                            start,
+                            axes=(3,),
+                        )
+                        sum_weight = mx.slice_update(
+                            sum_weight,
+                            sum_weight[offset:end] + weight_slice,
+                            start,
+                            axes=(0,),
+                        )
+                    else:
+                        out = out.at[:, :, :, offset:end].add(update)
+                        sum_weight = sum_weight.at[offset:end].add(weight_slice)
                     pending_updates += 1
                     maybe_eval(force=deterministic_accum)
                     if progress_bar is not None:

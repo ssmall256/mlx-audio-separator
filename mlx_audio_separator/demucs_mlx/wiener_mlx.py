@@ -7,6 +7,9 @@ from __future__ import annotations
 import os
 
 import mlx.core as mx
+from packaging import version
+
+_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
 
 
 def _to_complex(x: mx.array) -> mx.array:
@@ -254,8 +257,25 @@ def expectation_maximization(
                 x_slice = x[pos:end_pos]
                 v_slice = v[pos:end_pos]
                 y_batch = _apply_wiener_batch(x_slice, v_slice, R, eps)
-                y_next_real = y_next_real.at[pos:end_pos].add(mx.real(y_batch).astype(mx.float32))
-                y_next_imag = y_next_imag.at[pos:end_pos].add(mx.imag(y_batch).astype(mx.float32))
+                real_update = mx.real(y_batch).astype(mx.float32)
+                imag_update = mx.imag(y_batch).astype(mx.float32)
+                if _USE_SAFE_SLICE_ACCUMULATION:
+                    start = mx.array([pos])
+                    y_next_real = mx.slice_update(
+                        y_next_real,
+                        y_next_real[pos:end_pos] + real_update,
+                        start,
+                        axes=(0,),
+                    )
+                    y_next_imag = mx.slice_update(
+                        y_next_imag,
+                        y_next_imag[pos:end_pos] + imag_update,
+                        start,
+                        axes=(0,),
+                    )
+                else:
+                    y_next_real = y_next_real.at[pos:end_pos].add(real_update)
+                    y_next_imag = y_next_imag.at[pos:end_pos].add(imag_update)
             y = y_next_real.astype(mx.complex64) + 1j * y_next_imag.astype(mx.complex64)
         else:
             y_new_list = []
