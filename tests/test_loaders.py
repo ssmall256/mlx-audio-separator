@@ -1,7 +1,39 @@
 """Tests for weight key mapping in all loaders."""
 
+import importlib
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
+
+
+@pytest.mark.parametrize(
+    ("module_name", "function_name", "filename"),
+    [
+        ("mlx_audio_separator.separator.models.roformer.loader", "_load_state_dict", "model.ckpt"),
+        ("mlx_audio_separator.separator.models.mdxc.loader", "_load_state_dict", "model.ckpt"),
+        ("mlx_audio_separator.separator.models.vr.loader", "convert_torch_to_mlx_weights", "model.pth"),
+    ],
+)
+def test_checkpoint_loaders_use_restricted_torch_deserialization(monkeypatch, module_name, function_name, filename):
+    loader = importlib.import_module(module_name)
+    load_args = {}
+
+    def fake_load(path, **kwargs):
+        load_args.update(path=path, **kwargs)
+        return {}
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(__version__="2.6.0", load=fake_load))
+
+    result = getattr(loader, function_name)(filename)
+
+    assert result == {}
+    assert load_args == {
+        "path": filename,
+        "map_location": "cpu",
+        "weights_only": True,
+    }
 
 
 class TestRoformerWeightConversion:

@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from packaging.version import Version
 
 from mlx_audio_separator.separator.models.roformer.loader import load_roformer_model
 
@@ -152,7 +153,10 @@ def _load_state_dict(model_path: str) -> Dict[str, Any]:
             "Install torch or provide a pre-converted .safetensors file."
         )
 
-    state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
+    if Version(str(torch.__version__).split("+", 1)[0]) < Version("2.6"):
+        raise RuntimeError("PyTorch 2.6 or newer is required to safely load checkpoints.")
+
+    state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     if isinstance(state_dict, dict):
         if "state_dict" in state_dict:
             state_dict = state_dict["state_dict"]

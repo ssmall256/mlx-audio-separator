@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from packaging.version import Version
 
 from .bs_roformer import BSRoformerMLX, create_compiled_model
 from .mel_band_roformer import MelBandRoformerMLX
@@ -298,8 +299,11 @@ def _load_state_dict(model_path: str) -> Dict[str, Any]:
             "safetensors format."
         )
 
+    if Version(str(torch.__version__).split("+", 1)[0]) < Version("2.6"):
+        raise RuntimeError("PyTorch 2.6 or newer is required to safely load checkpoints.")
+
     logger.debug(f"Loading PyTorch checkpoint from {model_path}")
-    state_dict = torch.load(model_path, map_location="cpu", weights_only=False)
+    state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
 
     if isinstance(state_dict, dict):
         if "state_dict" in state_dict:

@@ -54,7 +54,7 @@ dev = [
     "ruff",
 ]
 convert = [
-    "torch>=2.3",
+    "torch>=2.6",
     "onnx>=1.15",
     "demucs>=4.0",
 ]
