@@ -654,7 +654,7 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "requests", specifier = ">=2" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "torch", marker = "extra == 'convert'", specifier = ">=2.3" },
+    { name = "torch", marker = "extra == 'convert'", specifier = ">=2.6" },
     { name = "tqdm" },
 ]
 provides-extras = ["dev", "convert"]

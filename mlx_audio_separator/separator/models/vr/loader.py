@@ -15,6 +15,7 @@ import os
 
 import mlx.core as mx
 import numpy as np
+from packaging.version import Version
 
 from .nets import determine_model_capacity
 from .nets_new import CascadedNet
@@ -124,6 +125,9 @@ def convert_torch_to_mlx_weights(model_path):
             "PyTorch is required for initial weight conversion. "
             "Install with: pip install 'mlx-audio-separator[convert]'"
         )
+
+    if Version(str(torch.__version__).split("+", 1)[0]) < Version("2.6"):
+        raise RuntimeError("PyTorch 2.6 or newer is required to safely load checkpoints.")
 
     state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     mapping_profile = _detect_mapping_profile(state_dict)
