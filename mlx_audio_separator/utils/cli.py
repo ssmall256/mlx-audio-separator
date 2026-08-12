@@ -89,8 +89,18 @@ def main():
         help="Performance speed profile (default: %(default)s).",
     )
     common_params.add_argument("--auto_tune_batch", action="store_true", help="Auto-tune batch size for the current model/audio.")
-    common_params.add_argument("--tune_probe_seconds", type=float, default=8.0, help="Probe duration for auto-tuner (default: %(default)s).")
-    common_params.add_argument("--cache_clear_policy", choices=["aggressive", "deferred"], default="aggressive", help="Cache clear policy (default: %(default)s).")
+    common_params.add_argument(
+        "--tune_probe_seconds",
+        type=float,
+        default=8.0,
+        help="Probe duration for auto-tuner (default: %(default)s).",
+    )
+    common_params.add_argument(
+        "--cache_clear_policy",
+        choices=["aggressive", "deferred"],
+        default="aggressive",
+        help="Cache clear policy (default: %(default)s).",
+    )
     common_params.add_argument("--write_workers", type=int, default=1, help="Concurrent stem writer workers (default: %(default)s).")
     common_params.add_argument(
         "--experimental_vectorized_chunking",

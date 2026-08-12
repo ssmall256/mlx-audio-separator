@@ -271,8 +271,16 @@ def run_model_equivalence(
                             sep_cand.load_model(model_filename=model_filename)
 
                         # Use info-only Separators to resolve finalized per-arch params from both configs.
-                        baseline_info = _separator_from_kwargs(base_kwargs, output_dir=os.path.join(run_root, "baseline_info"), info_only=True)
-                        candidate_info = _separator_from_kwargs(cand_kwargs, output_dir=os.path.join(run_root, "candidate_info"), info_only=True)
+                        baseline_info = _separator_from_kwargs(
+                            base_kwargs,
+                            output_dir=os.path.join(run_root, "baseline_info"),
+                            info_only=True,
+                        )
+                        candidate_info = _separator_from_kwargs(
+                            cand_kwargs,
+                            output_dir=os.path.join(run_root, "candidate_info"),
+                            info_only=True,
+                        )
                         base_arch_params = dict(baseline_info.arch_specific_params.get(arch, {}))
                         cand_arch_params = dict(candidate_info.arch_specific_params.get(arch, {}))
 

@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Run Ruff across the full repository in CI and clean the existing lint baseline.
+- Update GitHub-hosted workflow actions to Node.js 24-native major versions.
+
 ### Security
 
 - Load official Demucs packages with PyTorch's restricted weight-only deserializer and a narrow compatibility allowlist instead of the unrestricted upstream repository loader.

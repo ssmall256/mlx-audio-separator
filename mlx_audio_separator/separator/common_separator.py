@@ -8,6 +8,7 @@ from logging import Logger
 
 import mlx_audio_io as mac
 import numpy as np
+
 from mlx_audio_separator.utils.performance import AsyncStemWriter, clear_mlx_cache
 
 

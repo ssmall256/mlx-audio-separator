@@ -9,7 +9,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
 DEFAULT_STEMS = ["vocals", "drums", "bass", "other"]
 DEFAULT_TEMPLATES = [
     "{mix_stem}_{stem}.wav",

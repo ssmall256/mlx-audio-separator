@@ -180,7 +180,7 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], summary: dict[str, A
             f"- OK models: `{summary['ok_models']}`",
             f"- Failed models: `{summary['failed_models']}`",
             f"- Models passing speed gate: `{summary['pass_models']}`",
-            f"- Median speedup (OK rows): `"
+            "- Median speedup (OK rows): `"
             + ("n/a" if summary.get("median_speedup_ok") is None else f"{summary['median_speedup_ok']:.3f}x")
             + "`",
         ]

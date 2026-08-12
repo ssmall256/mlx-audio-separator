@@ -17,6 +17,7 @@ from importlib import metadata
 import requests
 import yaml
 from tqdm import tqdm
+
 from mlx_audio_separator.utils.performance import (
     PerfTraceWriter,
     clear_mlx_cache,
@@ -333,6 +334,7 @@ class Separator:
             return
 
         import tempfile
+
         import mlx_audio_io as mac
         try:
             info = mac.info(str(audio_file_path))

@@ -4,8 +4,8 @@ import mlx.core as mx
 import numpy as np
 
 from mlx_audio_separator.separator.models.roformer.bs_roformer import (
-    BSRoformerMLX,
     BandSplit,
+    BSRoformerMLX,
     MaskEstimator,
 )
 

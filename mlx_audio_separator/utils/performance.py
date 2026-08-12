@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 
-
 DEFAULT_PERFORMANCE_PARAMS = {
     "speed_mode": "default",
     "auto_tune_batch": False,

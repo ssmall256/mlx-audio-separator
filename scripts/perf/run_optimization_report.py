@@ -20,7 +20,6 @@ from typing import Any
 
 import mlx_audio_io as mac
 import numpy as np
-
 from compare_latency import (
     _build_run_config,
     _load_corpus,
@@ -29,9 +28,10 @@ from compare_latency import (
     compare_results,
     run_config,
 )
+from mlx_vs_pas_parity import run_model as run_python_mps_parity_model
+
 from mlx_audio_separator.core import Separator
 from mlx_audio_separator.utils.equivalence import read_stem_map, run_equivalence_suite
-from mlx_vs_pas_parity import run_model as run_python_mps_parity_model
 
 
 def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:

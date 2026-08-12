@@ -36,7 +36,6 @@ from typing import Any
 
 from mlx_audio_separator.utils.equivalence import run_equivalence_suite
 
-
 ARCH_TARGETED_IMPROVEMENT = {"Demucs", "MDXC"}
 ARCH_REGRESSION_GUARD = {"MDX", "VR"}
 STAGE_KEYS = (

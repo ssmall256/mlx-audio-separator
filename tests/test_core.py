@@ -136,8 +136,8 @@ class TestSeparatorStrictErrors:
 
 
 def test_auto_tune_restores_mdxc_runtime_attrs(monkeypatch, tmp_path):
-    import numpy as np
     import mlx_audio_io as mac
+    import numpy as np
 
     class _FakeModel:
         def __init__(self, output_dir):
