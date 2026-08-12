@@ -57,6 +57,28 @@ print(outputs)
 - VR
 - Demucs
 
+### Demucs cache security and migration
+
+Demucs conversion stores MLX weights as `<model>.safetensors` with a validated
+`<model>_config.json` sidecar. The loader verifies that the two files match
+before constructing a model. Legacy `<model>_mlx.pkl` caches are never
+deserialized. When automatic conversion is enabled they are left untouched and
+replaced by newly generated safe files from the official Demucs source.
+
+To regenerate a cache explicitly:
+
+```bash
+pip install "mlx-audio-separator[convert]"
+python -m mlx_audio_separator.demucs_mlx.mlx_convert htdemucs \
+  --output-dir ~/.cache/demucs-mlx
+```
+
+Official Demucs downloads retain their filename hash checks and are loaded with
+PyTorch's restricted weight-only deserializer. This trusts the installed
+PyTorch, Demucs, NumPy, and optional DiffQ implementations plus the official
+model registry; arbitrary checkpoint globals and local pickle caches are not
+trusted.
+
 ## Validation Snapshot
 
 Release validation snapshot (2026-02-24 to 2026-02-26):

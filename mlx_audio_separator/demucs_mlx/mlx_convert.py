@@ -6,19 +6,308 @@ weight layout transformations for Conv1d/Conv2d layers.
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
+import math
 import os
-import pickle
+import shlex
+import tempfile
 import typing as tp
+import warnings
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
+from mlx.utils import tree_flatten
 from packaging import version
 
 from .mlx_backend import MIN_MLX_VERSION
 from .mlx_registry import MLX_MODEL_REGISTRY
+
+SAFE_CACHE_FORMAT_VERSION = 1
+SAFE_CACHE_CONFIG_LIMIT = 1024 * 1024
+_MLX_MODEL_CLASSES = {"HTDemucsMLX", "HDemucsMLX", "DemucsMLX"}
+_SAFE_CACHE_REQUIRED_FIELDS = {
+    "format_version",
+    "model_name",
+    "model_class",
+    "sub_model_class",
+    "args",
+    "kwargs",
+    "mlx_version",
+    "num_models",
+    "weights",
+    "conversion_date",
+    "torch_signatures",
+    "safetensors_sha256",
+    "verification_passed",
+}
+_SAFE_CACHE_OPTIONAL_FIELDS = {
+    "per_model_args",
+    "per_model_kwargs",
+    "per_model_class",
+}
+
+
+class SafeCacheError(ValueError):
+    """Raised when a Demucs safetensors/config cache is incomplete or invalid."""
+
+
+def _reject_json_constant(value: str) -> tp.NoReturn:
+    raise SafeCacheError(f"Invalid JSON constant: {value}")
+
+
+def _encode_json_value(value: tp.Any, path: str = "config") -> tp.Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SafeCacheError(f"Non-finite value at {path}")
+        return value
+    if isinstance(value, Fraction):
+        return {
+            "__type__": "fraction",
+            "numerator": value.numerator,
+            "denominator": value.denominator,
+        }
+    if isinstance(value, np.generic):
+        return _encode_json_value(value.item(), path)
+    if isinstance(value, (list, tuple)):
+        return [
+            _encode_json_value(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise SafeCacheError(f"Mapping at {path} must use string keys")
+        return {
+            key: _encode_json_value(item, f"{path}.{key}")
+            for key, item in value.items()
+        }
+    raise SafeCacheError(f"Unsupported value at {path}: {type(value).__name__}")
+
+
+def _decode_json_value(value: tp.Any, path: str = "config") -> tp.Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SafeCacheError(f"Non-finite value at {path}")
+        return value
+    if isinstance(value, list):
+        return [
+            _decode_json_value(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        if "__type__" in value:
+            if set(value) != {"__type__", "numerator", "denominator"}:
+                raise SafeCacheError(f"Invalid tagged value at {path}")
+            if value["__type__"] != "fraction":
+                raise SafeCacheError(f"Unknown tagged value at {path}: {value['__type__']!r}")
+            numerator = value["numerator"]
+            denominator = value["denominator"]
+            if (
+                isinstance(numerator, bool)
+                or not isinstance(numerator, int)
+                or isinstance(denominator, bool)
+                or not isinstance(denominator, int)
+                or denominator == 0
+            ):
+                raise SafeCacheError(f"Invalid fraction at {path}")
+            return Fraction(numerator, denominator)
+        return {
+            key: _decode_json_value(item, f"{path}.{key}")
+            for key, item in value.items()
+        }
+    raise SafeCacheError(f"Unsupported JSON value at {path}: {type(value).__name__}")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _regeneration_command(model_name: str, cache_dir: tp.Union[str, Path]) -> str:
+    return (
+        "python -m mlx_audio_separator.demucs_mlx.mlx_convert "
+        f"{shlex.quote(model_name)} --output-dir {shlex.quote(str(cache_dir))}"
+    )
+
+
+def _validate_safe_cache_config(raw: tp.Any, model_name: str) -> dict[str, tp.Any]:
+    if not isinstance(raw, dict):
+        raise SafeCacheError("Demucs cache config must be a JSON object")
+    fields = set(raw)
+    missing = _SAFE_CACHE_REQUIRED_FIELDS.difference(fields)
+    unknown = fields.difference(_SAFE_CACHE_REQUIRED_FIELDS | _SAFE_CACHE_OPTIONAL_FIELDS)
+    if missing:
+        raise SafeCacheError(f"Demucs cache config is missing fields: {sorted(missing)}")
+    if unknown:
+        raise SafeCacheError(f"Demucs cache config has unknown fields: {sorted(unknown)}")
+    if (
+        isinstance(raw["format_version"], bool)
+        or not isinstance(raw["format_version"], int)
+        or raw["format_version"] != SAFE_CACHE_FORMAT_VERSION
+    ):
+        raise SafeCacheError(
+            f"Unsupported Demucs cache format version: {raw['format_version']!r}"
+        )
+    if raw["model_name"] != model_name:
+        raise SafeCacheError(
+            f"Demucs cache is for {raw['model_name']!r}, not requested model {model_name!r}"
+        )
+    if model_name not in MLX_MODEL_REGISTRY:
+        raise SafeCacheError(f"Unknown Demucs model: {model_name}")
+
+    decoded = _decode_json_value(raw)
+    model_class = decoded["model_class"]
+    sub_model_class = decoded["sub_model_class"]
+    if not isinstance(model_class, str):
+        raise SafeCacheError("Demucs cache model class must be a string")
+    if sub_model_class is not None and not isinstance(sub_model_class, str):
+        raise SafeCacheError("Demucs cache sub-model class must be a string or null")
+    if model_class == "BagOfModelsMLX":
+        if sub_model_class not in _MLX_MODEL_CLASSES:
+            raise SafeCacheError(f"Invalid bag sub-model class: {sub_model_class!r}")
+    elif model_class in _MLX_MODEL_CLASSES:
+        if sub_model_class is not None:
+            raise SafeCacheError("Single-model cache must not define a sub-model class")
+    else:
+        raise SafeCacheError(f"Unknown MLX model class: {model_class!r}")
+
+    num_models = decoded["num_models"]
+    if isinstance(num_models, bool) or not isinstance(num_models, int) or not 1 <= num_models <= 32:
+        raise SafeCacheError(f"Invalid model count: {num_models!r}")
+    if not isinstance(decoded["args"], list) or not isinstance(decoded["kwargs"], dict):
+        raise SafeCacheError("Demucs cache args/kwargs have invalid types")
+    registry_entry = MLX_MODEL_REGISTRY[model_name]
+    if decoded["torch_signatures"] != registry_entry["signatures"]:
+        raise SafeCacheError("Demucs cache source signatures do not match the model registry")
+    if num_models != len(registry_entry["signatures"]):
+        raise SafeCacheError("Demucs cache model count does not match the model registry")
+    if not isinstance(decoded["mlx_version"], str):
+        raise SafeCacheError("Demucs cache MLX version must be a string")
+    try:
+        version.parse(decoded["mlx_version"])
+    except version.InvalidVersion as exc:
+        raise SafeCacheError("Demucs cache MLX version is invalid") from exc
+    if not isinstance(decoded["conversion_date"], str):
+        raise SafeCacheError("Demucs cache conversion date must be a string")
+    try:
+        datetime.fromisoformat(decoded["conversion_date"])
+    except ValueError as exc:
+        raise SafeCacheError("Demucs cache conversion date is invalid") from exc
+    if not isinstance(decoded["verification_passed"], bool):
+        raise SafeCacheError("Demucs cache verification flag must be boolean")
+
+    expected_hash = decoded["safetensors_sha256"]
+    if (
+        not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+        or any(char not in "0123456789abcdef" for char in expected_hash)
+    ):
+        raise SafeCacheError("Demucs cache safetensors SHA-256 is invalid")
+
+    for field in ("per_model_args", "per_model_kwargs", "per_model_class"):
+        if field in decoded:
+            values = decoded[field]
+            if not isinstance(values, list) or len(values) != num_models:
+                raise SafeCacheError(f"Demucs cache {field} must contain one entry per model")
+    if "per_model_args" in decoded and any(
+        not isinstance(item, list) for item in decoded["per_model_args"]
+    ):
+        raise SafeCacheError("Demucs cache per-model args must be lists")
+    if "per_model_kwargs" in decoded and any(
+        not isinstance(item, dict) for item in decoded["per_model_kwargs"]
+    ):
+        raise SafeCacheError("Demucs cache per-model kwargs must be dictionaries")
+    if "per_model_class" in decoded and any(
+        item not in {"HTDemucs", "HDemucs", "Demucs"}
+        for item in decoded["per_model_class"]
+    ):
+        raise SafeCacheError("Demucs cache contains an unknown per-model class")
+
+    bag_weights = decoded["weights"]
+    if model_class == "BagOfModelsMLX":
+        if not isinstance(bag_weights, list) or len(bag_weights) != num_models:
+            raise SafeCacheError("Demucs bag weights must contain one row per model")
+        row_length = None
+        for row in bag_weights:
+            if not isinstance(row, list) or not row:
+                raise SafeCacheError("Demucs bag weight rows must be non-empty lists")
+            if row_length is None:
+                row_length = len(row)
+            elif len(row) != row_length:
+                raise SafeCacheError("Demucs bag weight rows must have equal lengths")
+            for weight in row:
+                if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                    raise SafeCacheError("Demucs bag weights must be numeric")
+                if not math.isfinite(float(weight)):
+                    raise SafeCacheError("Demucs bag weights must be finite")
+    elif bag_weights is not None:
+        raise SafeCacheError("Single-model cache must not define bag weights")
+
+    return decoded
+
+
+def _load_safe_cache_config(config_path: Path, model_name: str) -> dict[str, tp.Any]:
+    if config_path.stat().st_size > SAFE_CACHE_CONFIG_LIMIT:
+        raise SafeCacheError(f"Demucs cache config is too large: {config_path}")
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            raw = json.load(handle, parse_constant=_reject_json_constant)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SafeCacheError(f"Could not read Demucs cache config: {config_path}") from exc
+    return _validate_safe_cache_config(raw, model_name)
+
+
+def _save_safe_cache(
+    model_name: str,
+    output_dir: str,
+    weights: dict[str, mx.array],
+    config: dict[str, tp.Any],
+) -> str:
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    safetensors_path = output / f"{model_name}.safetensors"
+    config_path = output / f"{model_name}_config.json"
+
+    weight_fd, temporary_weights = tempfile.mkstemp(
+        prefix=f".{model_name}.", suffix=".safetensors", dir=output
+    )
+    config_fd, temporary_config = tempfile.mkstemp(
+        prefix=f".{model_name}.", suffix=".json", dir=output
+    )
+    os.close(weight_fd)
+    os.close(config_fd)
+    temporary_weights_path = Path(temporary_weights)
+    temporary_config_path = Path(temporary_config)
+
+    try:
+        mx.save_safetensors(temporary_weights_path, weights)
+        config = dict(config)
+        config["safetensors_sha256"] = _sha256_file(temporary_weights_path)
+        encoded_config = _encode_json_value(config)
+        _validate_safe_cache_config(encoded_config, model_name)
+        with temporary_config_path.open("w", encoding="utf-8") as handle:
+            json.dump(encoded_config, handle, allow_nan=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_weights_path, safetensors_path)
+        os.replace(temporary_config_path, config_path)
+    finally:
+        temporary_weights_path.unlink(missing_ok=True)
+        temporary_config_path.unlink(missing_ok=True)
+
+    return str(safetensors_path)
 
 
 class BagOfModelsMLX:
@@ -361,13 +650,13 @@ def convert_htdemucs_weights(
     # Lazy imports — conversion extras needed to load PyTorch weights
     try:
         from demucs.apply import BagOfModels
-        from demucs.pretrained import get_model
     except ImportError:
         raise ImportError(
             "Model conversion requires the [convert] extras. "
-            "Install with: pip install 'demucs-mlx[convert]' "
-            "or pip install 'mlx-audio-separator[convert]'"
+            "Install with: pip install 'mlx-audio-separator[convert]'"
         ) from None
+
+    from .secure_demucs import get_restricted_demucs_model
 
     if model_name not in MLX_MODEL_REGISTRY:
         raise ValueError(
@@ -391,7 +680,7 @@ def convert_htdemucs_weights(
     if verbose:
         print("\n1. Loading PyTorch model(s)...")
 
-    torch_model = get_model(model_name)
+    torch_model = get_restricted_demucs_model(model_name)
 
     if isinstance(torch_model, BagOfModels):
         if verbose:
@@ -450,54 +739,58 @@ def convert_htdemucs_weights(
         per_model_kwargs.append(tm_kwargs)
         per_model_class.append(type(tm).__name__)
 
-    if verbose:
-        print("\n4. Saving MLX checkpoint...")
-
-    checkpoint = {
-        'model_name': model_name,
-        'model_class': model_class,
-        'sub_model_class': sub_model_class,
-        'args': args,
-        'kwargs': kwargs,
-        'state': final_model.state_dict(),
-        'mlx_version': MIN_MLX_VERSION,
-        'num_models': len(mlx_models),
-        'weights': weights if isinstance(torch_model, BagOfModels) else None,
-        'conversion_date': datetime.now().isoformat(),
-        'torch_signatures': config['signatures'],
+    checkpoint_config = {
+        "format_version": SAFE_CACHE_FORMAT_VERSION,
+        "model_name": model_name,
+        "model_class": model_class,
+        "sub_model_class": sub_model_class,
+        "args": args,
+        "kwargs": kwargs,
+        "mlx_version": str(getattr(mx, "__version__", MIN_MLX_VERSION)),
+        "num_models": len(mlx_models),
+        "weights": weights if isinstance(torch_model, BagOfModels) else None,
+        "conversion_date": datetime.now().isoformat(),
+        "torch_signatures": config["signatures"],
+        "safetensors_sha256": "",
+        "verification_passed": False,
     }
     if isinstance(torch_model, BagOfModels):
         args_differ = any(per_model_args[0] != a for a in per_model_args[1:])
         kwargs_differ = any(per_model_kwargs[0] != k for k in per_model_kwargs[1:])
         if args_differ or kwargs_differ:
-            checkpoint['per_model_args'] = per_model_args
-            checkpoint['per_model_kwargs'] = per_model_kwargs
+            checkpoint_config["per_model_args"] = per_model_args
+            checkpoint_config["per_model_kwargs"] = per_model_kwargs
         if any(per_model_class[0] != c for c in per_model_class[1:]):
-            checkpoint['per_model_class'] = per_model_class
-
-    output_path = os.path.join(output_dir, f"{model_name}_mlx.pkl")
-    with open(output_path, 'wb') as f:
-        pickle.dump(checkpoint, f)
-
-    if verbose:
-        file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
-        print(f"   Saved to: {output_path}")
-        print(f"   File size: {file_size_mb:.1f} MB")
+            checkpoint_config["per_model_class"] = per_model_class
 
     if verify:
         if verbose:
-            print("\n5. Running verification tests...")
+            print("\n4. Running verification tests...")
         try:
             verify_conversion(torch_models[0], mlx_models[0], verbose=verbose)
-            checkpoint['verification_passed'] = True
-            with open(output_path, 'wb') as f:
-                pickle.dump(checkpoint, f)
+            checkpoint_config["verification_passed"] = True
             if verbose:
                 print("   ✓ Verification passed")
         except Exception as e:
             if verbose:
                 print(f"   ✗ Verification failed: {e}")
-            checkpoint['verification_passed'] = False
+            checkpoint_config["verification_passed"] = False
+
+    if verbose:
+        print(f"\n{5 if verify else 4}. Saving safe MLX checkpoint...")
+
+    flat_state = tree_flatten(final_model.state_dict(), destination={})
+    output_path = _save_safe_cache(
+        model_name,
+        output_dir,
+        flat_state,
+        checkpoint_config,
+    )
+
+    if verbose:
+        file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+        print(f"   Saved to: {output_path}")
+        print(f"   File size: {file_size_mb:.1f} MB")
 
     if verbose:
         print("\n" + "=" * 70)
@@ -563,117 +856,37 @@ def load_mlx_model(
     verbose: bool = False,
 ) -> tp.Any:
     """Load MLX model from cache or convert if needed."""
-    from .mlx_demucs import DemucsMLX
-    from .mlx_hdemucs import HDemucsMLX
-    from .mlx_htdemucs import HTDemucsMLX
+    safetensors_path = Path(cache_dir) / f"{model_name}.safetensors"
+    safetensors_config_path = Path(cache_dir) / f"{model_name}_config.json"
+    legacy_pickle_path = Path(cache_dir) / f"{model_name}_mlx.pkl"
 
-    def _normalize_model_class(name: tp.Optional[str]) -> str:
-        if not name:
-            return "HTDemucsMLX"
-        if name in {"HTDemucsMLX", "HDemucsMLX", "DemucsMLX"}:
-            return name
-        if "HTDemucs" in name:
-            return "HTDemucsMLX"
-        if "HDemucs" in name:
-            return "HDemucsMLX"
-        if "Demucs" in name:
-            return "DemucsMLX"
-        return "HTDemucsMLX"
-
-    safetensors_path = os.path.join(cache_dir, f"{model_name}.safetensors")
-    safetensors_config_path = os.path.join(cache_dir, f"{model_name}_config.json")
-
-    if os.path.exists(safetensors_path) and os.path.exists(safetensors_config_path):
+    safe_files_present = safetensors_path.exists() or safetensors_config_path.exists()
+    if safe_files_present:
+        if not safetensors_path.exists() or not safetensors_config_path.exists():
+            raise SafeCacheError(
+                "Incomplete Demucs safe cache; both files are required: "
+                f"{safetensors_path} and {safetensors_config_path}. "
+                "Remove the incomplete files and regenerate with: "
+                f"{_regeneration_command(model_name, cache_dir)}"
+            )
         if verbose:
             print(f"Loading from safetensors (preferred format): {safetensors_path}")
-        try:
-            return load_mlx_model_from_safetensors(
-                model_name, cache_dir=cache_dir, verbose=verbose
-            )
-        except Exception as e:
-            if verbose:
-                print(f"Warning: Safetensors loading failed ({e}), falling back to pickle")
+        return load_mlx_model_from_safetensors(
+            model_name, cache_dir=cache_dir, verbose=verbose
+        )
 
-    cache_path = os.path.join(cache_dir, f"{model_name}_mlx.pkl")
+    if legacy_pickle_path.exists():
+        warnings.warn(
+            f"Ignoring unsafe legacy Demucs cache {legacy_pickle_path}. "
+            "It will not be deserialized; regenerate safetensors and JSON metadata instead.",
+            FutureWarning,
+            stacklevel=2,
+        )
 
-    if os.path.exists(cache_path):
-        if verbose:
-            print(f"Loading cached MLX model: {cache_path}")
-
-        with open(cache_path, 'rb') as f:
-            checkpoint = pickle.load(f)
-
-        if _version_lt(checkpoint.get('mlx_version'), MIN_MLX_VERSION):
-            print("Warning: MLX version mismatch. Re-converting...")
-            if auto_convert:
-                return load_mlx_model(model_name, cache_dir, auto_convert=False, verbose=verbose)
-            raise ValueError("MLX version mismatch")
-
-        model_class_name = checkpoint['model_class']
-        args = checkpoint['args']
-        kwargs = checkpoint['kwargs']
-
-        if model_class_name == 'BagOfModelsMLX':
-            num_models = checkpoint['num_models']
-            weights = checkpoint['weights']
-            sub_model_class = _normalize_model_class(checkpoint.get('sub_model_class'))
-            per_model_args = checkpoint.get('per_model_args')
-            per_model_kwargs = checkpoint.get('per_model_kwargs')
-            per_model_class = checkpoint.get('per_model_class')
-
-            models = []
-            for i in range(num_models):
-                model_args = args
-                model_kwargs = kwargs
-                if per_model_args and i < len(per_model_args):
-                    model_args = tuple(per_model_args[i])
-                if per_model_kwargs and i < len(per_model_kwargs):
-                    model_kwargs = per_model_kwargs[i]
-                model_class = sub_model_class
-                if per_model_class and i < len(per_model_class):
-                    model_class = _normalize_model_class(per_model_class[i])
-
-                if model_class == 'HTDemucsMLX':
-                    model = HTDemucsMLX(*model_args, **model_kwargs)
-                elif model_class == 'HDemucsMLX':
-                    model = HDemucsMLX(*model_args, **model_kwargs)
-                elif model_class == 'DemucsMLX':
-                    model = DemucsMLX(*model_args, **model_kwargs)
-                else:
-                    raise ValueError(f"Unknown sub-model class: {model_class}")
-                models.append(model)
-
-            final_model = BagOfModelsMLX(models, weights)
-            final_model.load_state_dict(checkpoint['state'])
-
-        else:
-            if model_class_name == 'HTDemucsMLX':
-                final_model = HTDemucsMLX(*args, **kwargs)
-            elif model_class_name == 'HDemucsMLX':
-                final_model = HDemucsMLX(*args, **kwargs)
-            elif model_class_name == 'DemucsMLX':
-                final_model = DemucsMLX(*args, **kwargs)
-            else:
-                raise ValueError(f"Unknown model class: {model_class_name}")
-
-            final_model.load_state_dict(checkpoint['state'])
-
-        if verbose:
-            print(f"✓ Loaded {model_class_name}")
-
-        if model_class_name == 'BagOfModelsMLX':
-            for model in final_model.models:
-                model.eval()
-        else:
-            final_model.eval()
-
-        return final_model
-
-    elif auto_convert:
+    if auto_convert:
         if verbose:
             print(f"No cached model found. Converting {model_name}...")
-        
-        # Fall back to pickle conversion if safetensors script missing
+
         convert_htdemucs_weights(
             model_name,
             output_dir=cache_dir,
@@ -685,11 +898,16 @@ def load_mlx_model(
             model_name, cache_dir, auto_convert=False, verbose=verbose
         )
 
-    else:
-        raise FileNotFoundError(
-            f"No cached MLX model found at {cache_path}. "
-            f"Run convert_htdemucs_weights('{model_name}') first."
-        )
+    legacy_note = (
+        f" Unsafe legacy cache {legacy_pickle_path} was ignored."
+        if legacy_pickle_path.exists()
+        else ""
+    )
+    raise FileNotFoundError(
+        f"No safe Demucs cache found at {safetensors_path} and "
+        f"{safetensors_config_path}.{legacy_note} Regenerate with: "
+        f"{_regeneration_command(model_name, cache_dir)}"
+    )
 
 
 def load_mlx_model_from_safetensors(
@@ -700,10 +918,8 @@ def load_mlx_model_from_safetensors(
     """
     Load MLX model from safetensors format (faster, safer than pickle).
 
-    This function loads models converted with convert_to_safetensors.py.
+    This function loads models converted with convert_htdemucs_weights().
     Benefits:
-    - 10-16x faster loading via lazy loading
-    - 40%+ less memory usage
     - No PyTorch dependency for inference
     - Safer format (no arbitrary code execution)
 
@@ -719,11 +935,6 @@ def load_mlx_model_from_safetensors(
         FileNotFoundError: If safetensors or config files not found
         ValueError: If model configuration is invalid
     """
-    import json
-    import os
-
-    from safetensors.mlx import load_file
-
     from .mlx_demucs import DemucsMLX
     from .mlx_hdemucs import HDemucsMLX
     from .mlx_htdemucs import HTDemucsMLX
@@ -748,52 +959,57 @@ def load_mlx_model_from_safetensors(
         return out
 
     def _normalize_model_class(name: tp.Optional[str]) -> str:
-        if not name:
-            return "HTDemucsMLX"
-        if name in {"HTDemucsMLX", "HDemucsMLX", "DemucsMLX"}:
-            return name
-        if "HTDemucs" in name:
-            return "HTDemucsMLX"
-        if "HDemucs" in name:
-            return "HDemucsMLX"
-        if "Demucs" in name:
-            return "DemucsMLX"
-        return "HTDemucsMLX"
+        classes = {
+            "HTDemucs": "HTDemucsMLX",
+            "HDemucs": "HDemucsMLX",
+            "Demucs": "DemucsMLX",
+            "HTDemucsMLX": "HTDemucsMLX",
+            "HDemucsMLX": "HDemucsMLX",
+            "DemucsMLX": "DemucsMLX",
+        }
+        try:
+            return classes[name]
+        except KeyError:
+            raise SafeCacheError(f"Unknown Demucs model class: {name!r}") from None
 
-    safetensors_path = os.path.join(cache_dir, f"{model_name}.safetensors")
-    config_path = os.path.join(cache_dir, f"{model_name}_config.json")
+    safetensors_path = Path(cache_dir) / f"{model_name}.safetensors"
+    config_path = Path(cache_dir) / f"{model_name}_config.json"
 
     # Check if files exist
-    if not os.path.exists(safetensors_path):
+    if not safetensors_path.exists():
         raise FileNotFoundError(
             f"Safetensors file not found: {safetensors_path}\n"
-            f"Please run: python scripts/convert_to_safetensors.py {model_name}"
+            f"Run convert_htdemucs_weights({model_name!r}, output_dir={cache_dir!r})."
         )
 
-    if not os.path.exists(config_path):
+    if not config_path.exists():
         raise FileNotFoundError(
             f"Config file not found: {config_path}\n"
-            f"Please run: python scripts/convert_to_safetensors.py {model_name}"
+            f"Run convert_htdemucs_weights({model_name!r}, output_dir={cache_dir!r})."
         )
 
     if verbose:
         print(f"Loading MLX model from safetensors: {safetensors_path}")
 
-    # Load configuration
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    config = _load_safe_cache_config(config_path, model_name)
+    actual_hash = _sha256_file(safetensors_path)
+    if actual_hash != config["safetensors_sha256"]:
+        raise SafeCacheError(
+            f"Safetensors digest mismatch for {safetensors_path}; "
+            "remove both cache files and regenerate the model."
+        )
 
     # Version check
-    if _version_lt(config.get('mlx_version'), MIN_MLX_VERSION):
+    current_mlx_version = str(getattr(mx, "__version__", MIN_MLX_VERSION))
+    if _version_lt(current_mlx_version, MIN_MLX_VERSION):
         print(
-            f"Warning: Checkpoint created with MLX {config.get('mlx_version')}, "
-            f"but using {MIN_MLX_VERSION}. "
-            f"Consider reconverting."
+            f"Warning: installed MLX {current_mlx_version} is older than the "
+            f"recommended {MIN_MLX_VERSION}."
         )
-    elif config.get('mlx_version') != MIN_MLX_VERSION:
+    if config.get('mlx_version') != current_mlx_version:
         print(
             f"Warning: Checkpoint created with MLX {config.get('mlx_version')}, "
-            f"but using {MIN_MLX_VERSION}. "
+            f"but using {current_mlx_version}. "
             f"Consider reconverting."
         )
 
@@ -801,7 +1017,11 @@ def load_mlx_model_from_safetensors(
     if verbose:
         print("Loading weights...")
 
-    weights_dict = load_file(safetensors_path)
+    weights_dict = mx.load(safetensors_path)
+    if not isinstance(weights_dict, dict) or not all(
+        isinstance(key, str) for key in weights_dict
+    ):
+        raise SafeCacheError("Demucs safetensors file must contain named arrays")
 
     if verbose:
         print(f"Loaded {len(weights_dict)} weight tensors")
@@ -815,9 +1035,9 @@ def load_mlx_model_from_safetensors(
     per_model_class = config.get('per_model_class')
     num_models = config['num_models']
     bag_weights = config.get('weights')
-    sub_model_class = _normalize_model_class(config.get('sub_model_class'))
 
     if model_class_name == 'BagOfModelsMLX':
+        sub_model_class = _normalize_model_class(config.get('sub_model_class'))
         # Reconstruct bag of models
         if verbose:
             print(f"Reconstructing bag with {num_models} models...")
@@ -855,7 +1075,7 @@ def load_mlx_model_from_safetensors(
                     original_key = key[len(model_prefix):]
                     flat_model_state[original_key] = value
 
-            # Load weights using the same copy_weights logic as pickle conversion
+            # Load weights using the conversion path's key/layout logic.
             # This handles MLX's nested conv structure correctly
             _load_weights_into_model(model, flat_model_state)
 
@@ -897,42 +1117,6 @@ def load_mlx_model_from_safetensors(
     return final_model
 
 
-if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(
-        description='Convert HTDemucs PyTorch models to MLX format'
-    )
-    parser.add_argument(
-        'model_name',
-        choices=['htdemucs', 'htdemucs_ft', 'htdemucs_6s'],
-        help='Model to convert'
-    )
-    parser.add_argument(
-        '--output-dir',
-        default='./mlx_checkpoints',
-        help='Output directory for MLX checkpoints'
-    )
-    parser.add_argument(
-        '--verify',
-        action='store_true',
-        help='Run verification tests after conversion'
-    )
-    parser.add_argument(
-        '--quiet',
-        action='store_true',
-        help='Suppress progress output'
-    )
-
-    args = parser.parse_args()
-
-    convert_htdemucs_weights(
-        args.model_name,
-        output_dir=args.output_dir,
-        verify=args.verify,
-        verbose=not args.quiet
-    )
-    
 def _version_lt(a: tp.Optional[str], b: str) -> bool:
     if not a:
         return True
@@ -1005,3 +1189,40 @@ def _load_weights_into_model(model, flat_weights: tp.Dict[str, mx.array]):
 
     copy_weights_from_flat(model_state, flat_weights)
     model.update(model_state)
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Convert HTDemucs PyTorch models to MLX format'
+    )
+    parser.add_argument(
+        'model_name',
+        choices=sorted(MLX_MODEL_REGISTRY),
+        help='Model to convert'
+    )
+    parser.add_argument(
+        '--output-dir',
+        default='./mlx_checkpoints',
+        help='Output directory for MLX checkpoints'
+    )
+    parser.add_argument(
+        '--verify',
+        action='store_true',
+        help='Run verification tests after conversion'
+    )
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        help='Suppress progress output'
+    )
+
+    args = parser.parse_args()
+
+    convert_htdemucs_weights(
+        args.model_name,
+        output_dir=args.output_dir,
+        verify=args.verify,
+        verbose=not args.quiet
+    )

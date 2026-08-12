@@ -26,3 +26,20 @@ jobs:
 
       - name: Test
         run: pytest -v
+
+  conversion-security:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install conversion dependencies
+        run: pip install -e ".[dev,convert]"
+
+      - name: Test restricted Demucs deserialization
+        run: pytest -v tests/test_demucs_security.py
