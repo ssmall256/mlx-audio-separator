@@ -38,7 +38,7 @@ def _cache_config(
         "sub_model_class": sub_model_class,
         "args": [],
         "kwargs": {"segment": Fraction(39, 5)},
-        "mlx_version": "0.31.0",
+        "mlx_version": str(mx.__version__),
         "num_models": num_models,
         "weights": weights,
         "conversion_date": datetime.now().isoformat(),
