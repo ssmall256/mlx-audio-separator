@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.6 - 2026-08-12
+
+### Security
+
+- Use restricted weight-only deserialization for direct RoFormer, MDX23C, and VR PyTorch checkpoint conversion paths.
+- Reject PyTorch versions older than 2.6 before reading checkpoints because CVE-2025-32434 affects weight-only loading in earlier releases.
+
+### Changed
+
+- Require PyTorch 2.6 or newer for the optional `convert` dependency group.
+- Continue supporting plain tensor state dictionaries and `state_dict`/`model` wrappers while intentionally rejecting checkpoints containing arbitrary Python objects.
+
 ## 0.1.5 - 2026-06-13
 
 ### Fixed
