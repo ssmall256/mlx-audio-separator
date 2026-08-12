@@ -7,14 +7,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+CHECKPOINT_LOADERS = [
+    ("mlx_audio_separator.separator.models.roformer.loader", "_load_state_dict", "model.ckpt"),
+    ("mlx_audio_separator.separator.models.mdxc.loader", "_load_state_dict", "model.ckpt"),
+    ("mlx_audio_separator.separator.models.vr.loader", "convert_torch_to_mlx_weights", "model.pth"),
+]
+
 
 @pytest.mark.parametrize(
     ("module_name", "function_name", "filename"),
-    [
-        ("mlx_audio_separator.separator.models.roformer.loader", "_load_state_dict", "model.ckpt"),
-        ("mlx_audio_separator.separator.models.mdxc.loader", "_load_state_dict", "model.ckpt"),
-        ("mlx_audio_separator.separator.models.vr.loader", "convert_torch_to_mlx_weights", "model.pth"),
-    ],
+    CHECKPOINT_LOADERS,
 )
 def test_checkpoint_loaders_use_restricted_torch_deserialization(monkeypatch, module_name, function_name, filename):
     loader = importlib.import_module(module_name)
@@ -34,6 +36,26 @@ def test_checkpoint_loaders_use_restricted_torch_deserialization(monkeypatch, mo
         "map_location": "cpu",
         "weights_only": True,
     }
+
+
+@pytest.mark.parametrize(("module_name", "function_name", "filename"), CHECKPOINT_LOADERS)
+def test_checkpoint_loaders_reject_vulnerable_torch_before_deserialization(
+    monkeypatch, module_name, function_name, filename
+):
+    loader = importlib.import_module(module_name)
+    load_called = False
+
+    def fake_load(*args, **kwargs):
+        nonlocal load_called
+        load_called = True
+        raise AssertionError("torch.load must not run with a vulnerable PyTorch version")
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(__version__="2.5.1+cpu", load=fake_load))
+
+    with pytest.raises(RuntimeError, match="PyTorch 2.6 or newer is required"):
+        getattr(loader, function_name)(filename)
+
+    assert not load_called
 
 
 class TestRoformerWeightConversion:
