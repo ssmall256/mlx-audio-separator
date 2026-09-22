@@ -17,8 +17,13 @@ DEFAULT_PERFORMANCE_PARAMS = {
     "speed_mode": "default",
     "auto_tune_batch": False,
     "tune_probe_seconds": 8.0,
-    "cache_clear_policy": "aggressive",
-    "write_workers": 1,
+    # Measured on a 195 s track through htdemucs to FLAC: deferred clearing
+    # plus two writer threads runs 21.0 s against 22.4-25.3 s, for 70 MB more
+    # peak RSS (1.08 GB vs 1.01 GB) and bit-identical output (max abs diff
+    # 0.000e+00 on every stem). This was the only thing --speed_mode
+    # latency_safe_v3 actually did.
+    "cache_clear_policy": "deferred",
+    "write_workers": 2,
     "experimental_vectorized_chunking": False,
     "experimental_roformer_fast_norm": False,
     "experimental_roformer_grouped_band_split": False,

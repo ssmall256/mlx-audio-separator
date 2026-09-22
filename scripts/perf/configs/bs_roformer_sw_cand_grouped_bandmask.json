@@ -7,7 +7,7 @@
   "separator": {
     "output_format": "FLAC",
     "performance_params": {
-      "speed_mode": "latency_safe_v3",
+      "speed_mode": "default",
       "experimental_roformer_grouped_band_split": true,
       "experimental_roformer_grouped_mask_estimator": true
     }

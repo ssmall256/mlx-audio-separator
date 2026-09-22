@@ -65,11 +65,11 @@ class Separator:
         pitch_shift: 0
 
     Performance Parameters (opt-in):
-        speed_mode: "default" | "latency_safe" | "latency_safe_v2" | "latency_safe_v3"
+        speed_mode: deprecated and ignored; removed in the next major version
         auto_tune_batch: False
         tune_probe_seconds: 8.0
-        cache_clear_policy: "aggressive" | "deferred"
-        write_workers: 1
+        cache_clear_policy: "deferred" (default) | "aggressive"
+        write_workers: 2
         perf_trace: False
         perf_trace_path: None
         save_converted_safetensors: False
@@ -112,8 +112,11 @@ class Separator:
         if not self.logger.hasHandlers():
             self.logger.addHandler(self.log_handler)
 
-        if log_level > logging.DEBUG:
-            warnings.filterwarnings("ignore")
+        # Deliberately NOT warnings.filterwarnings("ignore"). That silenced every
+        # warning in the whole process -- the host application's included -- and
+        # was hiding real defects: three leaked file handles in this module and
+        # the FutureWarning about an unusable legacy Demucs cache. A library
+        # should not reach into global warning state.
 
         if not info_only:
             package_version = self.get_package_distribution("mlx-audio-separator")
@@ -255,54 +258,44 @@ class Separator:
             if "PYTEST_CURRENT_TEST" not in os.environ:
                 raise
 
+    #: ``speed_mode`` values kept for compatibility. Every one of them now
+    #: resolves to the shipped defaults, so passing one changes nothing.
+    _DEPRECATED_SPEED_MODES = ("latency_safe", "latency_safe_v2", "latency_safe_v3")
+
     def _apply_speed_mode_overrides(self):
+        """Honour ``speed_mode`` for compatibility; it no longer changes anything.
+
+        The profiles never earned their names. ``latency_safe`` was a no-op from
+        the day it shipped -- it set Demucs 8 / MDXC 1 / MDX 1 / VR 1, which were
+        already the defaults. ``latency_safe_v2`` raised the Demucs batch to 12,
+        measured ~10x slower than the default of 2. The only profile that did
+        anything useful was ``latency_safe_v3``, whose deferred cache clearing
+        and two writer threads are ~6-17% faster with bit-identical output, and
+        are now simply the defaults.
+
+        What is left is a name that describes a lineage rather than a behaviour,
+        which is the opposite of a discoverable option. The values stay accepted
+        so existing scripts and perf configs keep running, and warn. Remove in
+        the next major version.
+        """
         speed_mode = self.performance_params["speed_mode"]
         if speed_mode == "default":
             return
 
-        # Demucs batch sizes here used to be 8/12/8, chosen before the batch
-        # size was measured. 12 is ~10x slower than 2 on a 195 s input and 8 is
-        # ~2x slower on a 45 s one, so every profile now uses the measured
-        # optimum and these presets differ only in their runtime policy.
-        profiles = {
-            "latency_safe": {
-                "Demucs": DEFAULT_BATCH_SIZE,
-                "MDXC": 1,
-                "MDX": 1,
-                "VR": 1,
-            },
-            "latency_safe_v2": {
-                # Wave 4 experimental presets (opt-in only).
-                "Demucs": DEFAULT_BATCH_SIZE,
-                "MDXC": 1,
-                "MDX": 1,
-                "VR": 2,
-            },
-            "latency_safe_v3": {
-                # FLAC-focused no-drift runtime profile (opt-in only).
-                "Demucs": DEFAULT_BATCH_SIZE,
-                "MDXC": 1,
-                "MDX": 1,
-                "VR": 1,
-            },
-        }
-        selected = profiles.get(speed_mode)
-        if selected is None:
-            return
-
-        self.logger.info(f"Applying {speed_mode} speed-mode presets.")
-        for arch, batch_size in selected.items():
-            self.arch_specific_params[arch]["batch_size"] = int(batch_size)
-
-        performance_overrides = {
-            "latency_safe_v3": {
-                "cache_clear_policy": "deferred",
-                "write_workers": 2,
-            },
-        }
-        runtime_selected = performance_overrides.get(speed_mode)
-        if runtime_selected:
-            self.performance_params.update(runtime_selected)
+        if speed_mode in self._DEPRECATED_SPEED_MODES:
+            warnings.warn(
+                f"speed_mode={speed_mode!r} is deprecated and no longer changes "
+                "anything: its settings are the defaults as of 0.1.8. Drop the "
+                "option. It will be removed in the next major version. See "
+                "docs/tuning.md.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.logger.warning(
+                "speed_mode=%s is deprecated and has no effect; its settings are "
+                "now the defaults.",
+                speed_mode,
+            )
 
     def _build_tuning_key(self, arch: str, model_name: str, sr: int, channels: int):
         device = "unknown"
@@ -429,8 +422,14 @@ class Separator:
             self._clear_cache_now()
 
     def _finalize_deferred_cache(self):
-        if self.performance_params["cache_clear_policy"] == "deferred":
-            self._clear_cache_now()
+        if self.performance_params["cache_clear_policy"] != "deferred":
+            return
+        # Nothing has accumulated since the last clear -- the error path and the
+        # periodic 10-file clear both reset this counter, so finalizing again
+        # would just be a second no-op clear.
+        if self._files_since_cache_clear == 0:
+            return
+        self._clear_cache_now()
 
     def _emit_perf_trace(self, audio_file_path, metrics):
         if not self._perf_trace_writer:
@@ -526,7 +525,8 @@ class Separator:
             download_checks_path,
         )
 
-        model_downloads_list = json.load(open(download_checks_path, encoding="utf-8"))
+        with open(download_checks_path, encoding="utf-8") as handle:
+            model_downloads_list = json.load(handle)
         self.logger.debug("UVR model download list loaded")
 
         model_scores = self._load_model_scores()
@@ -550,7 +550,8 @@ class Separator:
         # Load audio-separator models list
         models_json_path = os.path.join(os.path.dirname(__file__), "models.json")
         if os.path.exists(models_json_path):
-            audio_separator_models_list = json.load(open(models_json_path, encoding="utf-8"))
+            with open(models_json_path, encoding="utf-8") as handle:
+                audio_separator_models_list = json.load(handle)
         else:
             audio_separator_models_list = {
                 "vr_download_list": {}, "mdx_download_list": {},
@@ -731,7 +732,8 @@ class Separator:
             model_data_yaml_filepath = yaml_config_filename
 
         self.logger.debug(f"Loading model data from YAML at path {model_data_yaml_filepath}")
-        model_data = yaml.load(open(model_data_yaml_filepath, encoding="utf-8"), Loader=yaml.FullLoader)
+        with open(model_data_yaml_filepath, encoding="utf-8") as handle:
+            model_data = yaml.load(handle, Loader=yaml.FullLoader)
         self.logger.debug(f"Model data loaded from YAML file: {model_data}")
 
         if "roformer" in model_data_yaml_filepath.lower():

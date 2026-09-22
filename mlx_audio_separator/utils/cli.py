@@ -112,7 +112,11 @@ def main():
         "--speed_mode",
         choices=["default", "latency_safe", "latency_safe_v2", "latency_safe_v3"],
         default="default",
-        help="Performance speed profile (default: %(default)s).",
+        help=(
+            "Deprecated and ignored: the latency_safe* profiles now resolve to "
+            "the defaults. Drop this option; it will be removed in the next "
+            "major version. See docs/tuning.md."
+        ),
     )
     common_params.add_argument("--auto_tune_batch", action="store_true", help="Auto-tune batch size for the current model/audio.")
     common_params.add_argument(
@@ -124,10 +128,10 @@ def main():
     common_params.add_argument(
         "--cache_clear_policy",
         choices=["aggressive", "deferred"],
-        default="aggressive",
+        default="deferred",
         help="Cache clear policy (default: %(default)s).",
     )
-    common_params.add_argument("--write_workers", type=int, default=1, help="Concurrent stem writer workers (default: %(default)s).")
+    common_params.add_argument("--write_workers", type=int, default=2, help="Concurrent stem writer workers (default: %(default)s).")
     common_params.add_argument(
         "--experimental_vectorized_chunking",
         action="store_true",

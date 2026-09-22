@@ -126,3 +126,86 @@ def test_cli_exposes_precision_and_seed():
     parser_src = __import__("inspect").getsource(cli)
     assert '"--precision"' in parser_src
     assert '"--demucs_seed"' in parser_src
+
+
+def test_io_policy_defaults_to_the_measured_optimum():
+    """deferred + 2 writers: ~6-17% faster, bit-identical output, +70 MB RSS."""
+    from mlx_audio_separator.utils.performance import DEFAULT_PERFORMANCE_PARAMS
+
+    assert DEFAULT_PERFORMANCE_PARAMS["cache_clear_policy"] == "deferred"
+    assert DEFAULT_PERFORMANCE_PARAMS["write_workers"] == 2
+
+
+def test_library_does_not_touch_global_warning_filters(tmp_path, monkeypatch):
+    """Separator() used to silence every warning in the host process.
+
+    It called warnings.filterwarnings("ignore") at any log level above DEBUG,
+    which is not a library's call to make, and it hid real defects: leaked file
+    handles in core.py and the FutureWarning about an unusable legacy Demucs
+    cache. Asserted behaviourally rather than by reading source, so the check
+    cannot be satisfied by a comment.
+    """
+    import warnings
+
+    from mlx_audio_separator.core import Separator
+
+    touched = []
+    monkeypatch.setattr(
+        warnings, "filterwarnings", lambda *a, **k: touched.append(("filterwarnings", a))
+    )
+    monkeypatch.setattr(
+        warnings, "simplefilter", lambda *a, **k: touched.append(("simplefilter", a))
+    )
+
+    Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+
+    assert touched == [], f"Separator mutated global warning filters: {touched}"
+
+
+def test_core_does_not_leak_file_handles(tmp_path):
+    """The three json.load(open(...)) sites were only invisible because every
+    warning was being suppressed."""
+    import warnings
+
+    from mlx_audio_separator.core import Separator
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sep = Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+        sep.list_supported_model_files()
+
+    leaks = [w for w in caught if issubclass(w.category, ResourceWarning)]
+    assert leaks == [], f"unclosed files: {[str(w.message) for w in leaks]}"
+
+
+def test_speed_mode_is_deprecated_and_inert(tmp_path):
+    from mlx_audio_separator.core import Separator
+
+    with pytest.warns(DeprecationWarning, match="no longer changes anything"):
+        sep = Separator(
+            info_only=True,
+            model_file_dir=str(tmp_path / "m"),
+            performance_params={"speed_mode": "latency_safe_v3"},
+        )
+    baseline = Separator(info_only=True, model_file_dir=str(tmp_path / "b"))
+    assert (
+        sep.performance_params["cache_clear_policy"]
+        == baseline.performance_params["cache_clear_policy"]
+    )
+
+
+def test_shipped_perf_configs_do_not_pin_a_deprecated_speed_mode():
+    """They would warn on every benchmark run and measure the default anyway."""
+    import glob
+    import json
+    import os
+
+    root = os.path.join(os.path.dirname(__file__), os.pardir, "scripts", "perf", "configs")
+    offenders = []
+    for path in glob.glob(os.path.join(root, "*.json")):
+        with open(path, encoding="utf-8") as handle:
+            cfg = json.load(handle)
+        mode = json.dumps(cfg)
+        if "latency_safe" in mode:
+            offenders.append(os.path.basename(path))
+    assert offenders == [], f"configs pin a deprecated speed_mode: {offenders}"

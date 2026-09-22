@@ -18,7 +18,23 @@ record.
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
 | Roformer/MDXC precision | **bf16** | ~15% faster, and ~70 dB SNR from fp32 (max abs diff 6.1e-05, about the 16-bit LSB) -- inaudible. `--precision fp32` for exact parity work. |
+| Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
+| Stem writer threads | **2** | Same measurement: overlaps encoding with inference. |
 | Overlap-add accumulation | `mx.slice_update` | Correct on every supported MLX version. MLX before 0.32.0 corrupts strided slice scatter-add. |
+
+### `--speed_mode` is deprecated
+
+It is accepted and ignored, and will be removed in the next major version.
+
+`latency_safe` never did anything: it set Demucs 8 / MDXC 1 / MDX 1 / VR 1,
+which were already the defaults the day it shipped. `latency_safe_v2` raised
+the Demucs batch to 12, which measures ~10x slower than the default of 2.
+`latency_safe_v3` was the only profile that did something useful, and its
+`deferred` cache clearing and two writer threads are now simply the defaults.
+
+The names described a lineage rather than a behaviour, which is the opposite of
+a discoverable option. Use `--cache_clear_policy` and `--write_workers`
+directly if you need to change either.
 
 All numbers measured on Apple silicon, 128 GB, macOS 27, mlx 0.31.2, using
 `htdemucs` and `model_bs_roformer_ep_317_sdr_12.9755`.

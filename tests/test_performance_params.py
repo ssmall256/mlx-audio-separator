@@ -6,7 +6,6 @@ import logging
 import pytest
 
 from mlx_audio_separator.core import Separator
-from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE
 from mlx_audio_separator.utils.performance import normalize_performance_params, select_best_candidate
 
 
@@ -17,8 +16,10 @@ class TestPerformanceParams:
         assert perf["speed_mode"] == "default"
         assert perf["auto_tune_batch"] is False
         assert perf["tune_probe_seconds"] == 8.0
-        assert perf["cache_clear_policy"] == "aggressive"
-        assert perf["write_workers"] == 1
+        # Deferred clearing + two writer threads: ~6-17% faster end to end
+        # with bit-identical output, for ~70 MB more peak RSS.
+        assert perf["cache_clear_policy"] == "deferred"
+        assert perf["write_workers"] == 2
         assert perf["experimental_vectorized_chunking"] is False
         assert perf["experimental_roformer_fast_norm"] is False
         assert perf["experimental_roformer_grouped_band_split"] is False
@@ -42,40 +43,44 @@ class TestPerformanceParams:
         assert perf["perf_trace"] is False
         assert perf["perf_trace_path"] is None
 
-    def test_latency_safe_batch_overrides(self, tmp_path):
-        sep = Separator(
-            info_only=True,
-            model_file_dir=str(tmp_path / "models"),
-            performance_params={"speed_mode": "latency_safe"},
-        )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == DEFAULT_BATCH_SIZE
-        assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
-        assert sep.arch_specific_params["MDX"]["batch_size"] == 1
-        assert sep.arch_specific_params["VR"]["batch_size"] == 1
+    @pytest.mark.parametrize(
+        "mode", ["latency_safe", "latency_safe_v2", "latency_safe_v3"]
+    )
+    def test_deprecated_speed_modes_are_accepted_but_inert(self, tmp_path, mode):
+        """Every profile now resolves to the defaults.
 
-    def test_latency_safe_v2_batch_overrides(self, tmp_path):
-        sep = Separator(
-            info_only=True,
-            model_file_dir=str(tmp_path / "models"),
-            performance_params={"speed_mode": "latency_safe_v2"},
-        )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == DEFAULT_BATCH_SIZE
-        assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
-        assert sep.arch_specific_params["MDX"]["batch_size"] == 1
-        assert sep.arch_specific_params["VR"]["batch_size"] == 2
+        latency_safe was a no-op from the day it shipped; latency_safe_v2
+        raised the Demucs batch to 12, which measured ~10x slower than the
+        default of 2; latency_safe_v3's deferred cache clearing and two writer
+        threads are now simply the defaults. The values stay accepted so
+        existing scripts and perf configs keep running.
+        """
+        baseline = Separator(info_only=True, model_file_dir=str(tmp_path / "base"))
 
-    def test_latency_safe_v3_runtime_overrides(self, tmp_path):
-        sep = Separator(
-            info_only=True,
-            model_file_dir=str(tmp_path / "models"),
-            performance_params={"speed_mode": "latency_safe_v3"},
+        with pytest.warns(DeprecationWarning, match="no longer changes anything"):
+            sep = Separator(
+                info_only=True,
+                model_file_dir=str(tmp_path / "models"),
+                performance_params={"speed_mode": mode},
+            )
+
+        for arch in ("Demucs", "MDXC", "MDX", "VR"):
+            assert (
+                sep.arch_specific_params[arch]["batch_size"]
+                == baseline.arch_specific_params[arch]["batch_size"]
+            ), f"{mode} changed {arch} batch size"
+        assert (
+            sep.performance_params["cache_clear_policy"]
+            == baseline.performance_params["cache_clear_policy"]
         )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == DEFAULT_BATCH_SIZE
-        assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
-        assert sep.arch_specific_params["MDX"]["batch_size"] == 1
-        assert sep.arch_specific_params["VR"]["batch_size"] == 1
-        assert sep.performance_params["cache_clear_policy"] == "deferred"
-        assert sep.performance_params["write_workers"] == 2
+        assert (
+            sep.performance_params["write_workers"]
+            == baseline.performance_params["write_workers"]
+        )
+
+    def test_default_speed_mode_does_not_warn(self, tmp_path, recwarn):
+        Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+        assert [w for w in recwarn if issubclass(w.category, DeprecationWarning)] == []
 
     def test_invalid_speed_mode(self):
         with pytest.raises(ValueError, match="speed_mode"):

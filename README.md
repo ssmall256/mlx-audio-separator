@@ -118,18 +118,14 @@ remain for benchmarking or exact-parity work.
 
 Release-facing stable controls:
 
-- `--speed_mode {default,latency_safe,latency_safe_v2,latency_safe_v3}`
-- `--cache_clear_policy {aggressive,deferred}`
-- `--write_workers <int>`
+- `--cache_clear_policy {aggressive,deferred}` — defaults to `deferred`
+- `--write_workers <int>` — defaults to `2`
 
-Example:
+Both already ship at the value that measured fastest, so the example that used
+to live here (passing them explicitly) is no longer needed.
 
-```bash
-mlx-audio-separator song.mp3 \
-  --speed_mode latency_safe \
-  --cache_clear_policy deferred \
-  --write_workers 2
-```
+`--speed_mode` is **deprecated and ignored**. Its `latency_safe*` profiles now
+resolve to the defaults, and it will be removed in the next major version.
 
 Basic benchmark command:
 
@@ -143,17 +139,17 @@ mlx-audio-separator \
 
 ## BS-Roformer-SW Performance (Opt-In)
 
-For `BS-Roformer-SW.ckpt`, use the opt-in no-drift FLAC profile:
+For `BS-Roformer-SW.ckpt`, no extra flags are needed:
 
 ```bash
 mlx-audio-separator song.mp3 \
   -m BS-Roformer-SW.ckpt \
-  --output_format FLAC \
-  --speed_mode latency_safe_v3
+  --output_format FLAC
 ```
 
-`latency_safe_v3` keeps model inference behavior conservative and focuses on
-safe end-to-end latency wins (`deferred` cache clearing + async stem writes).
+What `--speed_mode latency_safe_v3` used to enable -- `deferred` cache clearing
+plus async stem writes -- is now the default. Measured on a 195 s track to
+FLAC it runs ~6-17% faster than the old defaults with bit-identical output.
 
 To avoid repeated checkpoint conversion overhead, pre-convert once to
 `*.safetensors` and exit:

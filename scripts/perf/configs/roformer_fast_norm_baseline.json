@@ -8,7 +8,7 @@
   "separator": {
     "output_format": "WAV",
     "performance_params": {
-      "speed_mode": "latency_safe",
+      "speed_mode": "default",
       "cache_clear_policy": "deferred",
       "experimental_roformer_fast_norm": false
     }

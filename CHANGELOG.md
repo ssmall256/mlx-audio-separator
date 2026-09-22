@@ -40,6 +40,23 @@ All notable changes to this project are documented in this file.
   users to set and which therefore could never work. Six of the ten have no CLI flag, so
   the environment was the only way to reach them. A variable is now only written when the
   caller actually supplied the corresponding `performance_params` key.
+- **`deferred` cache clearing and 2 stem-writer threads are now the defaults.** Measured
+  on a 195 s track to FLAC: 21.0 s against 22.4-25.3 s, bit-identical output (max abs
+  diff 0.000e+00 on every stem), ~70 MB more peak RSS. This was the only thing
+  `--speed_mode latency_safe_v3` actually did. Note that a writer thread is now spawned
+  by default, which matters if you embed the library in a constrained process; pass
+  `--write_workers 1` to restore serial writes.
+- **`--speed_mode` is deprecated, accepted and ignored**, and will be removed in the next
+  major version. `latency_safe` never did anything -- it set the values that were already
+  the defaults the day it shipped. `latency_safe_v2` raised the Demucs batch to 12, which
+  measures ~10x slower than 2. `latency_safe_v3`'s settings are now the defaults. Passing
+  any of them logs a warning and changes nothing; the nine `scripts/perf/configs/*.json`
+  that pinned a profile now say `default`, which is what they resolve to.
+- **The library no longer calls `warnings.filterwarnings("ignore")`.** `Separator()` was
+  silencing every warning in the host process at any log level above DEBUG. That is not a
+  library's call to make, and it was hiding real defects: three leaked file handles in
+  `core.py` (now closed) and the `FutureWarning` telling users their legacy Demucs pickle
+  cache would not be loaded.
 - **`--demucs_seed` defaults to a fixed seed**, so repeated runs on the same input
   reproduce. Pass `--demucs_seed random` for the previous per-run variation.
 - **New `--precision {auto,bf16,fp32}` flag.** bf16 was already enabled for
