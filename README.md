@@ -110,6 +110,12 @@ These numbers are scoped to the benchmark settings above and are not universal g
 
 ## Stable Runtime Tuning
 
+**The defaults are the recommended configuration.** Every inference option ships
+at the value that measured best for both quality and speed, so you should not
+need to set anything to get good results. See [docs/tuning.md](docs/tuning.md)
+for what those values are, the measurements behind them, and the levers that
+remain for benchmarking or exact-parity work.
+
 Release-facing stable controls:
 
 - `--speed_mode {default,latency_safe,latency_safe_v2,latency_safe_v3}`

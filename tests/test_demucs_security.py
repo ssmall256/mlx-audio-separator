@@ -83,6 +83,7 @@ def test_restricted_demucs_loader_rejects_vulnerable_torch_before_download():
 
 def test_restricted_demucs_loader_does_not_execute_pickle_payload(monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
+    pytest.importorskip("demucs.demucs")  # needed to build the allowlist
     checkpoint = tmp_path / "malicious.th"
     marker = tmp_path / "executed"
     torch.save({"payload": _ExecutablePayload(marker)}, checkpoint)
@@ -133,6 +134,7 @@ def test_restricted_demucs_loader_accepts_known_package(monkeypatch, tmp_path):
 
 def test_restricted_demucs_loader_rejects_malformed_package(monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
+    pytest.importorskip("demucs.demucs")  # needed to build the allowlist
     checkpoint = tmp_path / "malformed.th"
     torch.save({"klass": "not-a-class", "args": [], "kwargs": {}, "state": {}}, checkpoint)
     _mock_url_load(monkeypatch, torch, checkpoint)
@@ -339,3 +341,16 @@ def test_converter_writes_only_safe_cache(monkeypatch, tmp_path):
     assert output == str(tmp_path / "htdemucs.safetensors")
     assert (tmp_path / "htdemucs_config.json").exists()
     assert not (tmp_path / "htdemucs_mlx.pkl").exists()
+
+
+def test_missing_convert_extra_reports_the_missing_package(monkeypatch):
+    """A missing demucs install must not look like a security refusal."""
+    torch = pytest.importorskip("torch")
+
+    def _boom():
+        raise ImportError("No module named 'demucs'", name="demucs")
+
+    monkeypatch.setattr(secure_demucs, "_safe_globals", _boom)
+
+    with pytest.raises(ImportError, match=r"\[convert\] extras"):
+        secure_demucs._load_package_from_url("https://example.invalid/model.th", torch)

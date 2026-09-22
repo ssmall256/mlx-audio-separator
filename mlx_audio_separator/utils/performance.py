@@ -44,6 +44,22 @@ DEFAULT_PERFORMANCE_PARAMS = {
 }
 
 
+#: Config key carrying the set of performance keys the caller actually
+#: supplied. Kept alongside ``performance_params`` rather than inside it, so
+#: the params dict stays plain and JSON-serializable for perf traces.
+#:
+#: It is needed because defaults are merged in during normalization, after
+#: which a flag nobody mentioned is indistinguishable from one explicitly set
+#: to its default -- and the separators must not publish an ``os.environ``
+#: value for a flag the caller never asked about.
+EXPLICIT_KEYS = "performance_params_explicit_keys"
+
+
+def explicit_performance_keys(params: dict[str, Any] | None) -> frozenset:
+    """The keys a caller actually supplied, before defaults are merged in."""
+    return frozenset(params or {})
+
+
 def normalize_performance_params(params: dict[str, Any] | None) -> dict[str, Any]:
     """Validate and normalize performance parameters."""
     out = dict(DEFAULT_PERFORMANCE_PARAMS)
@@ -268,3 +284,39 @@ class AsyncStemWriter:
             thread.join()
         if self._error is not None:
             raise self._error
+
+
+def apply_experimental_env(
+    env_var: str,
+    enabled: bool,
+    *,
+    explicit: bool,
+    logger=None,
+) -> None:
+    """Publish an experimental toggle to the environment without clobbering.
+
+    These flags are read lazily by kernel-construction code, so the separator
+    forwards them through ``os.environ``. It used to write every one of them
+    unconditionally on construction, which silently overrode anything the user
+    had exported -- including a value the docs told them to set. Six of the ten
+    have no CLI flag at all, so exporting them was the only way to reach them,
+    and that did not work either.
+
+    Now the environment is only written when the caller actually asked for a
+    value. An untouched flag leaves any exported value alone.
+    """
+    if not explicit:
+        if env_var in os.environ and logger is not None:
+            logger.debug(
+                "Honouring %s=%s from the environment.", env_var, os.environ[env_var]
+            )
+        return
+    os.environ[env_var] = "1" if enabled else "0"
+
+
+def experimental_env_enabled(env_var: str, default: bool = False) -> bool:
+    """Read an experimental toggle, falling back to ``default`` when unset."""
+    raw = os.environ.get(env_var)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

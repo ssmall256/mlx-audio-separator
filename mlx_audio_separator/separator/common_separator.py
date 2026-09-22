@@ -99,6 +99,9 @@ class CommonSeparator:
         self.invert_using_spec = config.get("invert_using_spec")
         self.sample_rate = config.get("sample_rate")
         self.performance_params = config.get("performance_params", {}) or {}
+        self.performance_params_explicit_keys = frozenset(
+            config.get("performance_params_explicit_keys", ()) or ()
+        )
         self.cache_clear_policy = self.performance_params.get("cache_clear_policy", "aggressive")
         self.write_workers = int(self.performance_params.get("write_workers", 1))
         self.experimental_flac_fast_write = bool(self.performance_params.get("experimental_flac_fast_write", False))

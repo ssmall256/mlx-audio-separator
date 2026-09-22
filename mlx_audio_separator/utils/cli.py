@@ -7,6 +7,20 @@ import logging
 import os
 import sys
 
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE, DEFAULT_SHIFT_SEED
+
+
+def _seed_arg(value: str):
+    """Parse --demucs_seed, accepting 'random'/'none' for unseeded runs."""
+    if value.strip().lower() in {"random", "none", "null"}:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"seed must be an integer or 'random', got {value!r}"
+        ) from None
+
 
 def main():
     logger = logging.getLogger(__name__)
@@ -80,6 +94,18 @@ def main():
     )
     common_params.add_argument("--single_stem", default=None, help="Output only a single stem.")
     common_params.add_argument("--sample_rate", type=int, default=44100, help="Sample rate (default: %(default)s).")
+    common_params.add_argument(
+        "--precision",
+        type=str,
+        default="auto",
+        choices=["auto", "bf16", "fp32"],
+        help=(
+            "Transformer precision for Roformer/MDXC models. 'auto' (the "
+            "default) uses bf16, which is ~15%% faster and differs from fp32 "
+            "by ~70 dB SNR -- inaudible. Use 'fp32' for exact parity work "
+            "(default: %(default)s)."
+        ),
+    )
     common_params.add_argument("--chunk_duration", type=float, default=None, help="Split audio into chunks of this duration in seconds.")
     common_params.add_argument("--custom_output_names", type=json.loads, default=None, help='Custom output names in JSON format.')
     common_params.add_argument(
@@ -170,12 +196,16 @@ def main():
     demucs_params.add_argument("--demucs_shifts", type=int, default=2, help="Number of random shifts (default: %(default)s).")
     demucs_params.add_argument(
         "--demucs_seed",
-        type=int,
-        default=None,
-        help="Optional seed for deterministic Demucs shift offsets (default: %(default)s).",
+        type=_seed_arg,
+        default=DEFAULT_SHIFT_SEED,
+        help=(
+            "Seed for the Demucs shift offsets. Fixed by default so repeated "
+            "runs on the same input reproduce; pass 'random' to vary per run "
+            "(default: %(default)s)."
+        ),
     )
     demucs_params.add_argument("--demucs_overlap", type=float, default=0.25, help="Overlap ratio (default: %(default)s).")
-    demucs_params.add_argument("--demucs_batch_size", type=int, default=8, help="Batch size (default: %(default)s).")
+    demucs_params.add_argument("--demucs_batch_size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size (default: %(default)s).")
     demucs_params.add_argument(
         "--demucs_segments_enabled", type=bool, default=True,
         help="Enable segment-wise processing (default: %(default)s).",
@@ -220,6 +250,14 @@ def main():
 
     # Set MLX environment variables for performance
     os.environ.setdefault("MLX_USE_FAST_SDP", "1")
+
+    # Transformer precision for Roformer/MDXC models. bf16 is the default
+    # because it is measurably faster and the difference is inaudible: on
+    # BS-Roformer it costs ~70 dB SNR (max abs diff 6.1e-05, around the 16-bit
+    # LSB) while running ~15% quicker. fp32 is here for parity work, and for
+    # anyone who would rather not take the tradeoff at all.
+    if args.precision != "auto":
+        os.environ["MLX_ENABLE_AMP"] = "1" if args.precision == "bf16" else "0"
 
     from mlx_audio_separator.core import Separator
 

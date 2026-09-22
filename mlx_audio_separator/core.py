@@ -18,9 +18,11 @@ import requests
 import yaml
 from tqdm import tqdm
 
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE, DEFAULT_SHIFT_SEED
 from mlx_audio_separator.utils.performance import (
     PerfTraceWriter,
     clear_mlx_cache,
+    explicit_performance_keys,
     load_tuning_cache,
     normalize_performance_params,
     save_tuning_cache,
@@ -174,13 +176,17 @@ class Separator:
         if chunk_duration is not None:
             if chunk_duration <= 0:
                 raise ValueError("chunk_duration must be greater than 0")
+        # Capture which keys the caller supplied before defaults are merged in,
+        # so separators can tell "asked for this" from "left at its default".
+        self.performance_params_explicit_keys = explicit_performance_keys(performance_params)
         self.performance_params = normalize_performance_params(performance_params)
         self._strict_separation_errors = False
         self.save_converted_safetensors = bool(save_converted_safetensors)
 
         if demucs_params is None:
             demucs_params = {
-                "segment_size": "Default", "shifts": 2, "overlap": 0.25, "segments_enabled": True, "batch_size": 8, "seed": None,
+                "segment_size": "Default", "shifts": 2, "overlap": 0.25, "segments_enabled": True,
+                "batch_size": DEFAULT_BATCH_SIZE, "seed": DEFAULT_SHIFT_SEED,
             }
         if mdxc_params is None:
             mdxc_params = {
@@ -254,23 +260,27 @@ class Separator:
         if speed_mode == "default":
             return
 
+        # Demucs batch sizes here used to be 8/12/8, chosen before the batch
+        # size was measured. 12 is ~10x slower than 2 on a 195 s input and 8 is
+        # ~2x slower on a 45 s one, so every profile now uses the measured
+        # optimum and these presets differ only in their runtime policy.
         profiles = {
             "latency_safe": {
-                "Demucs": 8,
+                "Demucs": DEFAULT_BATCH_SIZE,
                 "MDXC": 1,
                 "MDX": 1,
                 "VR": 1,
             },
             "latency_safe_v2": {
                 # Wave 4 experimental presets (opt-in only).
-                "Demucs": 12,
+                "Demucs": DEFAULT_BATCH_SIZE,
                 "MDXC": 1,
                 "MDX": 1,
                 "VR": 2,
             },
             "latency_safe_v3": {
                 # FLAC-focused no-drift runtime profile (opt-in only).
-                "Demucs": 8,
+                "Demucs": DEFAULT_BATCH_SIZE,
                 "MDXC": 1,
                 "MDX": 1,
                 "VR": 1,
@@ -316,7 +326,7 @@ class Separator:
 
     def _candidate_batch_sizes(self):
         return {
-            "Demucs": [4, 8, 12],
+            "Demucs": [1, 2, 4],
             "MDXC": [1, 2, 4],
             "MDX": [1, 2, 4],
             "VR": [1, 2, 4],
@@ -800,6 +810,7 @@ class Separator:
             "invert_using_spec": self.invert_using_spec,
             "sample_rate": self.sample_rate,
             "performance_params": self.performance_params,
+            "performance_params_explicit_keys": self.performance_params_explicit_keys,
         }
 
         separator_classes = {

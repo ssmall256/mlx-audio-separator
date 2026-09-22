@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from mlx_audio_separator.separator.common_separator import CommonSeparator, match_array_shapes, normalize
 from mlx_audio_separator.separator.models.roformer.overlap_add_kernels import OverlapAddFusionCache
+from mlx_audio_separator.utils.performance import apply_experimental_env
 
 # MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
 # Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
@@ -114,27 +115,25 @@ class MDXCSeparator(CommonSeparator):
         from mlx_audio_separator.separator.models.mdxc.loader import load_mdxc_model
 
         # Controls L2Norm implementation in Roformer model construction.
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_FAST_NORM"] = (
-            "1" if self.experimental_roformer_fast_norm else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_BAND_SPLIT"] = (
-            "1" if getattr(self, "experimental_roformer_grouped_band_split", False) else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_MASK_ESTIMATOR"] = (
-            "1" if getattr(self, "experimental_roformer_grouped_mask_estimator", False) else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_WEIGHT_CACHE"] = (
-            "1" if getattr(self, "experimental_roformer_grouped_weight_cache", False) else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_CHUNK_GATHER_BATCHING"] = (
-            "1" if getattr(self, "experimental_roformer_chunk_gather_batching", False) else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING"] = (
-            "1" if getattr(self, "experimental_roformer_ola_simd_tuning", False) else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_ROFORMER_COMPILE_FULLGRAPH"] = (
-            "1" if getattr(self, "experimental_roformer_compile_fullgraph", False) else "0"
-        )
+
+        # Publish only the flags the caller asked about, so an exported value
+        # is not silently overwritten before the model is built.
+        explicit = getattr(self, "performance_params_explicit_keys", frozenset())
+        for env_var, key in (
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_FAST_NORM", "experimental_roformer_fast_norm"),
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_BAND_SPLIT", "experimental_roformer_grouped_band_split"),
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_MASK_ESTIMATOR", "experimental_roformer_grouped_mask_estimator"),
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_GROUPED_WEIGHT_CACHE", "experimental_roformer_grouped_weight_cache"),
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_CHUNK_GATHER_BATCHING", "experimental_roformer_chunk_gather_batching"),
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING", "experimental_roformer_ola_simd_tuning"),
+            ("MLX_AUDIO_SEPARATOR_ROFORMER_COMPILE_FULLGRAPH", "experimental_roformer_compile_fullgraph"),
+        ):
+            apply_experimental_env(
+                env_var,
+                bool(getattr(self, key, False)),
+                explicit=key in explicit,
+                logger=self.logger,
+            )
         if self.experimental_roformer_fast_norm:
             self.logger.info("Enabled experimental Roformer fast norm path (mx.fast.rms_norm).")
 

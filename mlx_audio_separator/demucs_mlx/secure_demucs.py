@@ -129,8 +129,21 @@ def _validate_package(package: tp.Any, torch: tp.Any) -> dict[str, tp.Any]:
 
 def _load_package_from_url(url: str, torch: tp.Any) -> dict[str, tp.Any]:
     _require_safe_torch(torch)
+    # Build the allowlist outside the try below. It imports demucs, and a
+    # missing conversion extra used to surface as "Refusing to load ... with
+    # unrestricted deserialization", which points at a security problem that
+    # does not exist and hides the one-line fix.
     try:
-        with torch.serialization.safe_globals(_safe_globals()):
+        safe_globals = _safe_globals()
+    except ImportError as exc:
+        raise ImportError(
+            "Demucs conversion requires the [convert] extras "
+            f"({exc.name or 'demucs'} is not installed). "
+            "Install with: pip install 'mlx-audio-separator[convert]'"
+        ) from exc
+
+    try:
+        with torch.serialization.safe_globals(safe_globals):
             package = torch.hub.load_state_dict_from_url(
                 url,
                 map_location="cpu",

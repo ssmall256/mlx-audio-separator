@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+from .defaults import DEFAULT_BATCH_SIZE
 from .mlx_registry import MLX_MODEL_REGISTRY
 
 
@@ -230,7 +231,7 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
     parser.add_argument("--overlap", type=float, default=0.25, help="Overlap ratio")
     parser.add_argument("--shifts", type=int, default=1, help="Number of random shifts")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed for deterministic shift offsets")
-    parser.add_argument("-b", "--batch-size", type=int, default=8, help="Batch size for inference")
+    parser.add_argument("-b", "--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for inference")
     parser.add_argument("--write-workers", type=int, default=1,
                         help="Number of concurrent audio writer threads")
     parser.add_argument("--prefetch-tracks", type=int, default=2,

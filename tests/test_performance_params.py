@@ -6,6 +6,7 @@ import logging
 import pytest
 
 from mlx_audio_separator.core import Separator
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE
 from mlx_audio_separator.utils.performance import normalize_performance_params, select_best_candidate
 
 
@@ -47,7 +48,7 @@ class TestPerformanceParams:
             model_file_dir=str(tmp_path / "models"),
             performance_params={"speed_mode": "latency_safe"},
         )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == 8
+        assert sep.arch_specific_params["Demucs"]["batch_size"] == DEFAULT_BATCH_SIZE
         assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
         assert sep.arch_specific_params["MDX"]["batch_size"] == 1
         assert sep.arch_specific_params["VR"]["batch_size"] == 1
@@ -58,7 +59,7 @@ class TestPerformanceParams:
             model_file_dir=str(tmp_path / "models"),
             performance_params={"speed_mode": "latency_safe_v2"},
         )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == 12
+        assert sep.arch_specific_params["Demucs"]["batch_size"] == DEFAULT_BATCH_SIZE
         assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
         assert sep.arch_specific_params["MDX"]["batch_size"] == 1
         assert sep.arch_specific_params["VR"]["batch_size"] == 2
@@ -69,7 +70,7 @@ class TestPerformanceParams:
             model_file_dir=str(tmp_path / "models"),
             performance_params={"speed_mode": "latency_safe_v3"},
         )
-        assert sep.arch_specific_params["Demucs"]["batch_size"] == 8
+        assert sep.arch_specific_params["Demucs"]["batch_size"] == DEFAULT_BATCH_SIZE
         assert sep.arch_specific_params["MDXC"]["batch_size"] == 1
         assert sep.arch_specific_params["MDX"]["batch_size"] == 1
         assert sep.arch_specific_params["VR"]["batch_size"] == 1

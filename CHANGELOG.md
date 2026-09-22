@@ -21,6 +21,34 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Demucs defaults now match the parity configuration out of the box.** Fused
+  GroupNorm/GLU Metal kernels are off by default. Measured on a 45 s clip through
+  `htdemucs`, enabling them costs ~20 dB SNR against the unfused path (19.7 dB on drums,
+  23.7 dB on other) -- audible, not float noise -- because the kernel uses an
+  erf-approximation GELU and threadgroup reductions whose width varies with tensor shape.
+  They are not faster either (0.783 s fused vs 0.776 s unfused, median of five runs).
+  Out-of-the-box SNR against the parity configuration goes from ~20 dB to ~130 dB.
+  `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` restores them for benchmarking.
+- **Demucs batch size default is 2, was 8.** Measured: 0.872 s vs 1.870 s on a 45 s clip
+  and 3.901 s vs 5.524 s on a 195 s one, at 4.75 GB vs 9.20 GB peak memory. The old
+  `latency_safe_v2` value of 12 was ~10x slower than 2. All speed-mode profiles and the
+  auto-tune candidate list now use the measured optimum, and the value lives in one
+  place (`demucs_mlx/defaults.py`) so the CLI, API and `apply_model` cannot drift apart.
+- **Experimental flags no longer clobber the environment.** Ten `MLX_AUDIO_SEPARATOR_*`
+  variables were written unconditionally on every run, silently overriding anything a
+  user exported -- including `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP`, which the docs told
+  users to set and which therefore could never work. Six of the ten have no CLI flag, so
+  the environment was the only way to reach them. A variable is now only written when the
+  caller actually supplied the corresponding `performance_params` key.
+- **`--demucs_seed` defaults to a fixed seed**, so repeated runs on the same input
+  reproduce. Pass `--demucs_seed random` for the previous per-run variation.
+- **New `--precision {auto,bf16,fp32}` flag.** bf16 was already enabled for
+  Roformer/MDXC transformers with no flag and no documentation. Measured on BS-Roformer
+  it is ~15% faster and differs from fp32 by ~70 dB SNR (max abs diff 6.1e-05, around the
+  16-bit LSB), so it stays the default -- but it is now discoverable and switchable.
+- A missing `demucs` package during conversion now reports the missing `[convert]` extra
+  instead of "Refusing to load Demucs checkpoint with unrestricted deserialization",
+  which pointed at a security problem that did not exist.
 - Always use `mx.slice_update()` for overlap-add accumulation instead of gating on
   `mlx >= 0.31.2`. The declared floor was `mlx >= 0.31.0`, so 0.31.0 and 0.31.1 silently
   took the corrupting `array.at[...].add()` path. MLX fixed the underlying strided

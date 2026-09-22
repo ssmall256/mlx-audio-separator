@@ -18,7 +18,7 @@ Wave 4 is performance work after release stabilization. All new behavior remains
 | `--experimental_roformer_compile_fullgraph` | Roformer (MDXC path) | Active (opt-in) | Shape-keyed full-graph compile cache for Roformer forward model. |
 | `--experimental_flac_fast_write` | All arches (FLAC output) | Active (opt-in) | Requests FLAC fast-write mode when backend support is available. |
 | `--experimental_compile_model_forward` | MDX23C (MDXC path) | Active (opt-in) | Compiled forward path where supported. |
-| `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1` | Demucs fused GroupNorm+GLU | Active (opt-in, env) | Enables multigroup hybrid GN+GLU fast path (`num_groups > 1`) for Demucs experiments. |
+| `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1` | Demucs fused GroupNorm+GLU | Active (opt-in, env) | Enables multigroup hybrid GN+GLU fast path (`num_groups > 1`) for Demucs experiments. Note that fused GroupNorm is off by default as of 0.1.8, so this also needs `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all`. Until 0.1.8 the separator overwrote this variable on construction, so exporting it had no effect. |
 | `--experimental_compile_shapeless` | Roformer compile path | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
 | `--experimental_roformer_static_compiled_demix` | Roformer static demix | Inactive (compat-only) | Accepted for compatibility; currently inactive by policy. |
 
@@ -53,7 +53,7 @@ Current status:
 
 1. Correctness-first hybrid GN+GLU path is implemented (fp32 GN+affine + fp32 GLU + final cast).
 2. Deterministic mode now defaults fused GroupNorm mode to `off` (stable parity path).
-3. Multigroup GN+GLU fast path is available only as opt-in via `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1`.
+3. Multigroup GN+GLU fast path is available only as opt-in via `MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP=1`, together with `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` (fused GroupNorm is off by default from 0.1.8; see `docs/tuning.md`).
 
 Acceptance:
 

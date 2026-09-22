@@ -35,13 +35,15 @@ def test_stable_threadgroup_size_deterministic_caps_to_256():
             os.environ[key] = previous
 
 
-def test_fused_groupnorm_mode_defaults_to_all():
+def test_fused_groupnorm_mode_defaults_to_off():
     key_mode = "MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE"
     key_det = "MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED"
     previous_mode = os.environ.pop(key_mode, None)
     previous_det = os.environ.pop(key_det, None)
     try:
-        assert mk._fused_groupnorm_mode() == "all"
+        # Fused GroupNorm costs ~20 dB SNR against the unfused path on
+        # htdemucs and is not faster, so it is opt-in.
+        assert mk._fused_groupnorm_mode() == "off"
     finally:
         if previous_mode is not None:
             os.environ[key_mode] = previous_mode

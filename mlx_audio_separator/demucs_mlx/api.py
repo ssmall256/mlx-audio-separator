@@ -4,6 +4,7 @@ from __future__ import annotations
 import typing as tp
 from pathlib import Path
 
+from .defaults import DEFAULT_BATCH_SIZE
 from .mlx_registry import MLX_MODEL_REGISTRY
 
 
@@ -20,7 +21,7 @@ class Separator:
         segment: tp.Optional[float] = None,
         jobs: int = 0,
         progress: bool = False,
-        batch_size: int = 8,
+        batch_size: int = DEFAULT_BATCH_SIZE,
         seed: tp.Optional[int] = None,
         callback: tp.Optional[tp.Callable[[dict], None]] = None,
         callback_arg: tp.Optional[dict] = None,

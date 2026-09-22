@@ -6,7 +6,9 @@ import time
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE
 from mlx_audio_separator.separator.common_separator import CommonSeparator
+from mlx_audio_separator.utils.performance import apply_experimental_env
 
 
 class DemucsSeparator(CommonSeparator):
@@ -24,7 +26,7 @@ class DemucsSeparator(CommonSeparator):
         self.shifts = arch_config.get("shifts", 2)
         self.overlap = arch_config.get("overlap", 0.25)
         self.segments_enabled = arch_config.get("segments_enabled", True)
-        self.batch_size = int(arch_config.get("batch_size", 8))
+        self.batch_size = int(arch_config.get("batch_size", DEFAULT_BATCH_SIZE))
         self.seed = arch_config.get("seed")
         self.experimental_demucs_wiener_preallocate_output = bool(
             self.performance_params.get("experimental_demucs_wiener_preallocate_output", False)
@@ -35,15 +37,30 @@ class DemucsSeparator(CommonSeparator):
         self.experimental_demucs_gn_glu_multigroup = bool(
             self.performance_params.get("experimental_demucs_gn_glu_multigroup", False)
         )
-        os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_PREALLOC_OUTPUT"] = (
-            "1" if self.experimental_demucs_wiener_preallocate_output else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_DEMUCS_APPLY_CONCAT_BATCHING"] = (
-            "1" if self.experimental_demucs_apply_concat_batching else "0"
-        )
-        os.environ["MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP"] = (
-            "1" if self.experimental_demucs_gn_glu_multigroup else "0"
-        )
+        # Only publish a flag the caller actually asked about; otherwise an
+        # exported value would be silently overwritten before any kernel is
+        # built (see apply_experimental_env).
+        explicit = getattr(self, "performance_params_explicit_keys", frozenset())
+        for env_var, key, enabled in (
+            (
+                "MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_PREALLOC_OUTPUT",
+                "experimental_demucs_wiener_preallocate_output",
+                self.experimental_demucs_wiener_preallocate_output,
+            ),
+            (
+                "MLX_AUDIO_SEPARATOR_DEMUCS_APPLY_CONCAT_BATCHING",
+                "experimental_demucs_apply_concat_batching",
+                self.experimental_demucs_apply_concat_batching,
+            ),
+            (
+                "MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP",
+                "experimental_demucs_gn_glu_multigroup",
+                self.experimental_demucs_gn_glu_multigroup,
+            ),
+        ):
+            apply_experimental_env(
+                env_var, enabled, explicit=key in explicit, logger=self.logger
+            )
 
         self.logger.debug(
             f"Demucs params: segment_size={self.segment_size}, shifts={self.shifts}, "

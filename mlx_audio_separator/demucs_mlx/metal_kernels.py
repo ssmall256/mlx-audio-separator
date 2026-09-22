@@ -43,16 +43,20 @@ def _fused_groupnorm_mode() -> str:
     Controlled by:
       MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE = all | glu_only | gelu_only | off
 
-    Defaults to `all`.
+    Defaults to `off`.
+
+    These kernels were on by default until they were measured. On a 45 s clip
+    through htdemucs, enabling them costs ~20 dB SNR against the unfused path
+    (19.7 dB on drums, 23.7 dB on other) -- audible, not float noise -- because
+    the kernel uses an erf-approximation GELU and threadgroup reductions whose
+    width varies with tensor shape. They are also not faster: median 0.783 s
+    fused vs 0.776 s unfused over five timed runs, since at real Demucs shapes
+    `elems_per_group` mostly exceeds the hybrid threshold and falls back
+    anyway. Strictly worse on both axes, so they are opt-in now.
     """
     raw_env = os.getenv("MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE")
     if raw_env is None or raw_env.strip() == "":
-        deterministic = os.getenv("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "").strip().lower()
-        # In deterministic mode, disable all fused GroupNorm kernels due known
-        # run-to-run drift in fused reduction kernels.
-        if deterministic in {"1", "true", "yes", "on"}:
-            return "off"
-        return "all"
+        return "off"
     raw = raw_env.strip().lower()
     if raw in {"", "all", "on", "true", "1"}:
         return "all"
