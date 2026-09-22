@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.8 - 2026-09-22
+
+### Fixed
+
+- Demucs models produced near-silent stems on 0.1.7 (issue #4). The safetensors cache
+  introduced in 0.1.7 was written from `tree_flatten(model.state_dict())` (MLX attribute
+  names) but read back through the PyTorch-style key walker used by the conversion path,
+  which collapses the `conv`/`layers` wrapper segments. 360 of 573 tensors never matched
+  and were left at their random initialization, with no error and no warning, so every
+  Demucs model emitted noise-floor output. Cache loading now validates keys and shapes
+  against the constructed model and fails loudly on any mismatch.
+  **Existing caches do not need to be regenerated** — only the reader was wrong.
+- `--sample_rate` no longer truncates Demucs output. Demucs runs at its trained 44100 Hz
+  rate, but the stems were written with the requested rate in the header and no resample,
+  so `--sample_rate 48000` produced files 8.8% short. Stems are now resampled to the
+  requested rate before writing; the default 44100 path is unchanged and does no work.
+
+### Changed
+
+- Always use `mx.slice_update()` for overlap-add accumulation instead of gating on
+  `mlx >= 0.31.2`. The declared floor was `mlx >= 0.31.0`, so 0.31.0 and 0.31.1 silently
+  took the corrupting `array.at[...].add()` path. MLX fixed the underlying strided
+  scatter-add bug in 0.32.0; `mx.slice_update()` is correct on every supported version.
+  Set `MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1` to benchmark the legacy path.
+- Raise the minimum MLX version to 0.31.2 to match what is actually tested.
+
 ## 0.1.7 - 2026-08-12
 
 ### Changed

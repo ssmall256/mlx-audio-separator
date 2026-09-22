@@ -2,6 +2,7 @@
 
 import mlx.core as mx
 import numpy as np
+import pytest
 
 from mlx_audio_separator.demucs_mlx import apply_mlx
 
@@ -94,7 +95,15 @@ class _IdentityDemucsModel:
         return x[:, None, :, :]
 
 
-def test_apply_model_split_overlap_add_reconstructs_identity():
+@pytest.mark.parametrize("overlap", [0.0, 0.25, 0.5])
+@pytest.mark.parametrize("batch_size", [1, 8])
+def test_apply_model_split_overlap_add_reconstructs_identity(overlap, batch_size):
+    """Overlap-add must reconstruct an identity model exactly.
+
+    MLX < 0.32.0 corrupts strided slice scatter-add, which silently skews this
+    accumulator. Sweeping overlap and batch size exercises the 1-D, 2-D and
+    3-D Metal dispatch grids where the bad index arithmetic shows up.
+    """
     sr = 44100
     length = sr * 20
     t = mx.arange(length, dtype=mx.float32) / sr
@@ -107,9 +116,9 @@ def test_apply_model_split_overlap_add_reconstructs_identity():
         mix,
         shifts=0,
         split=True,
-        overlap=0.25,
+        overlap=overlap,
         transition_power=1.0,
-        batch_size=8,
+        batch_size=batch_size,
         segment=7.8,
     )
 

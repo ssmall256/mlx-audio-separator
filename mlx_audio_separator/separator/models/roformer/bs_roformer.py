@@ -25,9 +25,17 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from mlx_spectro import get_transform_mlx
-from packaging import version
 
-_USE_SAFE_SLICE_ACCUMULATION = version.parse(mx.__version__) >= version.parse("0.31.2")
+# MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
+# Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
+# `arr.at[..., a:b].add(x)` silently accumulates into aliased cells. Fixed in
+# MLX 0.32.0 (backend/metal/kernels/indexing/scatter.h). `mx.slice_update` with
+# an mx.array start takes the DynamicSliceUpdate path and is correct on every
+# supported version, so it is used unconditionally. Set
+# MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1 to benchmark the legacy path.
+_USE_SAFE_SLICE_ACCUMULATION = os.getenv(
+    "MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD", ""
+).strip().lower() not in {"1", "true", "yes", "on"}
 
 # Helper functions
 

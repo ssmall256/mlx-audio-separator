@@ -138,6 +138,14 @@ class DemucsSeparator(CommonSeparator):
 
         self.logger.info(f"Demucs separation complete. Stems: {list(stems.keys())}")
 
+        # Demucs runs at the model's own rate; resample to the requested output
+        # rate before writing, otherwise the header rate and the payload
+        # disagree and the file plays back at the wrong length.
+        model_sr = int(self._demucs_separator.samplerate)
+        target_sr = int(self.sample_rate) if self.sample_rate else model_sr
+        if target_sr != model_sr:
+            self.logger.debug(f"Resampling stems from {model_sr} Hz to {target_sr} Hz for output.")
+
         # Write output files
         output_files = []
         for stem_name, stem_data in stems.items():
@@ -147,6 +155,8 @@ class DemucsSeparator(CommonSeparator):
 
             # Postprocess host transfer per emitted stem only.
             t0 = time.perf_counter()
+            if target_sr != model_sr:
+                stem_data = mac.resample(stem_data, model_sr, target_sr, layout="channels_first")
             stem_np = np.asarray(stem_data)
             if stem_np.ndim == 2:
                 stem_np = stem_np.T

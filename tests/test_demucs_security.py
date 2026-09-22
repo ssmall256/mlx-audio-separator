@@ -247,7 +247,7 @@ def test_single_model_safe_cache_loads_with_null_sub_model_class(monkeypatch, tm
         config,
     )
     monkeypatch.setattr(mlx_htdemucs, "HTDemucsMLX", FakeHTDemucsMLX)
-    monkeypatch.setattr(mlx_convert, "_load_weights_into_model", lambda *args: None)
+    monkeypatch.setattr(mlx_convert, "_load_exact_model_state", lambda *a, **k: None)
 
     model = mlx_convert.load_mlx_model_from_safetensors(
         "htdemucs", cache_dir=str(tmp_path)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
-from mlx.utils import tree_flatten
+from mlx.utils import tree_flatten, tree_unflatten
 from packaging import version
 
 from .mlx_backend import MIN_MLX_VERSION
@@ -1075,9 +1075,15 @@ def load_mlx_model_from_safetensors(
                     original_key = key[len(model_prefix):]
                     flat_model_state[original_key] = value
 
-            # Load weights using the conversion path's key/layout logic.
-            # This handles MLX's nested conv structure correctly
-            _load_weights_into_model(model, flat_model_state)
+            # The cache was written from tree_flatten(state_dict()), so keys
+            # must match exactly; a silent miss would leave this sub-model at
+            # its random initialization.
+            _load_exact_model_state(
+                model,
+                flat_model_state,
+                context=f"Demucs cache model {i}",
+                regeneration=_regeneration_command(model_name, cache_dir),
+            )
 
             models.append(model)
 
@@ -1102,7 +1108,12 @@ def load_mlx_model_from_safetensors(
         else:
             raise ValueError(f"Unknown model class: {model_class_name}")
 
-        _load_weights_into_model(final_model, weights_dict)
+        _load_exact_model_state(
+            final_model,
+            weights_dict,
+            context="Demucs cache",
+            regeneration=_regeneration_command(model_name, cache_dir),
+        )
 
         if verbose:
             print(f"✓ Loaded {model_class_name}")
@@ -1134,6 +1145,41 @@ def _model_root_dir() -> Path:
         if root.exists():
             return root
     return here.parents[4]
+
+
+def _load_exact_model_state(
+    model: tp.Any,
+    flat_weights: tp.Dict[str, mx.array],
+    *,
+    context: str,
+    regeneration: str,
+) -> None:
+    """Load a safetensors cache into ``model`` with strict key/shape checking.
+
+    Cache files are written from ``tree_flatten(model.state_dict())``, so the
+    keys must round-trip exactly. Anything else means the cache does not match
+    the model this version constructs, and loading it would silently leave
+    parameters at their random initialization.
+    """
+    expected = dict(tree_flatten(model.state_dict()))
+    expected_keys = set(expected)
+    actual_keys = set(flat_weights)
+    if expected_keys != actual_keys:
+        missing = sorted(expected_keys - actual_keys)[:10]
+        unexpected = sorted(actual_keys - expected_keys)[:10]
+        raise SafeCacheError(
+            f"{context} state keys do not match the constructed model "
+            f"(missing={missing}, unexpected={unexpected}). "
+            f"Remove both cache files and regenerate with: {regeneration}"
+        )
+    for key, value in flat_weights.items():
+        if tuple(value.shape) != tuple(expected[key].shape):
+            raise SafeCacheError(
+                f"{context} tensor {key!r} has shape {tuple(value.shape)}, "
+                f"expected {tuple(expected[key].shape)}. "
+                f"Remove both cache files and regenerate with: {regeneration}"
+            )
+    model.update(tree_unflatten(list(flat_weights.items())))
 
 
 def _load_weights_into_model(model, flat_weights: tp.Dict[str, mx.array]):
