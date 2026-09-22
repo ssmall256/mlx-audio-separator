@@ -79,7 +79,11 @@ All notable changes to this project are documented in this file.
   took the corrupting `array.at[...].add()` path. MLX fixed the underlying strided
   scatter-add bug in 0.32.0; `mx.slice_update()` is correct on every supported version.
   Set `MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1` to benchmark the legacy path.
-- Raise the minimum MLX version to 0.31.2 to match what is actually tested.
+- Raise the minimum MLX version to 0.31.2 and allow 0.32.x (`mlx>=0.31.2,<0.33`).
+  Verified end to end against MLX 0.32.2: all suites pass and Demucs output is
+  bit-identical to 0.31.2 (max abs diff 0.000e+00 on every stem). Note that MLX fixed
+  the strided scatter-add bug in 0.32.0, so the `mx.slice_update` accumulation this
+  release makes unconditional is now belt-and-braces on 0.32.x rather than load-bearing.
 
 ## 0.1.7 - 2026-08-12
 
