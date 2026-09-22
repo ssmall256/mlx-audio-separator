@@ -999,18 +999,30 @@ def load_mlx_model_from_safetensors(
             "remove both cache files and regenerate the model."
         )
 
-    # Version check
+    # Version check. The cache holds plain safetensors arrays, so a differing
+    # MLX version is not by itself a reason to reconvert -- htdemucs output is
+    # bit-identical across 0.31.2 and 0.32.2 from one cache (measured), and
+    # _load_exact_model_state raises on any key or shape incompatibility. Warn
+    # only when a version is actually out of the supported range.
     current_mlx_version = str(getattr(mx, "__version__", MIN_MLX_VERSION))
     if _version_lt(current_mlx_version, MIN_MLX_VERSION):
-        print(
-            f"Warning: installed MLX {current_mlx_version} is older than the "
-            f"recommended {MIN_MLX_VERSION}."
+        warnings.warn(
+            f"Installed MLX {current_mlx_version} is older than the "
+            f"recommended {MIN_MLX_VERSION}.",
+            RuntimeWarning,
+            stacklevel=2,
         )
-    if config.get('mlx_version') != current_mlx_version:
-        print(
-            f"Warning: Checkpoint created with MLX {config.get('mlx_version')}, "
-            f"but using {current_mlx_version}. "
-            f"Consider reconverting."
+    cache_mlx_version = config.get("mlx_version")
+    if isinstance(cache_mlx_version, str) and _version_lt(
+        cache_mlx_version, MIN_MLX_VERSION
+    ):
+        warnings.warn(
+            f"Demucs cache at {safetensors_path} was written by MLX "
+            f"{cache_mlx_version}, which is older than the supported "
+            f"{MIN_MLX_VERSION}. Regenerate it with "
+            f"{_regeneration_command(model_name, cache_dir)} if separation looks wrong.",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     # Load weights with lazy loading (MLX feature!)

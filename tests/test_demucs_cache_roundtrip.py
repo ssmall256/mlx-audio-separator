@@ -143,3 +143,74 @@ def test_shape_mismatch_raises():
             _WrappedModel(), corrupted, context="Demucs cache", regeneration="<cmd>"
         )
     assert victim in str(excinfo.value)
+
+
+def _stub_cache(tmp_path, monkeypatch, *, cache_mlx_version):
+    """Write a minimal valid safetensors cache claiming a given MLX version.
+
+    The model class and the strict loader are stubbed out: this exercises the
+    version-check branch only, which runs before either is reached.
+    """
+    from datetime import datetime
+    from fractions import Fraction
+
+    from mlx_audio_separator.demucs_mlx import mlx_htdemucs
+
+    class _FakeHTDemucsMLX:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def eval(self):
+            pass
+
+    config = {
+        "format_version": mlx_convert.SAFE_CACHE_FORMAT_VERSION,
+        "model_name": "htdemucs",
+        "model_class": "HTDemucsMLX",
+        "sub_model_class": None,
+        "args": [],
+        "kwargs": {"segment": Fraction(39, 5)},
+        "mlx_version": cache_mlx_version,
+        "num_models": 1,
+        "weights": None,
+        "conversion_date": datetime.now().isoformat(),
+        "torch_signatures": mlx_convert.MLX_MODEL_REGISTRY["htdemucs"]["signatures"],
+        "safetensors_sha256": "",
+        "verification_passed": False,
+    }
+    mlx_convert._save_safe_cache(
+        "htdemucs", str(tmp_path), {"weight": mx.array([1.0])}, config
+    )
+    monkeypatch.setattr(mlx_htdemucs, "HTDemucsMLX", _FakeHTDemucsMLX)
+    monkeypatch.setattr(mlx_convert, "_load_exact_model_state", lambda *a, **k: None)
+
+
+def test_supported_mlx_version_difference_is_silent(
+    tmp_path, monkeypatch, recwarn, capsys
+):
+    """A cache written by another *supported* MLX is not a reason to reconvert.
+
+    0.1.8 warned on plain string inequality and told the user to reconvert --
+    a torch-requiring, multi-minute operation. Measured on m4mini with
+    identical environments, one htdemucs cache produces bit-identical stems
+    (0.000e+00) under both 0.31.2 and 0.32.2, so the advice was wrong.
+    _load_exact_model_state is what catches a genuinely incompatible cache,
+    and it raises rather than warns.
+    """
+    other = "0.32.2" if mx.__version__ != "0.32.2" else "0.31.2"
+    _stub_cache(tmp_path, monkeypatch, cache_mlx_version=other)
+
+    mlx_convert.load_mlx_model_from_safetensors("htdemucs", cache_dir=str(tmp_path))
+
+    # Checked on both channels: the old code used a bare print(), so asserting
+    # only on the warnings list would pass against the behaviour being pinned.
+    assert "reconvert" not in capsys.readouterr().out.lower()
+    assert [w for w in recwarn.list if "reconvert" in str(w.message).lower()] == []
+
+
+def test_cache_below_supported_mlx_floor_warns(tmp_path, monkeypatch):
+    """Below the supported floor is the one case worth flagging."""
+    _stub_cache(tmp_path, monkeypatch, cache_mlx_version="0.28.0")
+
+    with pytest.warns(RuntimeWarning, match=r"0\.28\.0"):
+        mlx_convert.load_mlx_model_from_safetensors("htdemucs", cache_dir=str(tmp_path))

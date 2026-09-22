@@ -84,6 +84,17 @@ All notable changes to this project are documented in this file.
   bit-identical to 0.31.2 (max abs diff 0.000e+00 on every stem). Note that MLX fixed
   the strided scatter-add bug in 0.32.0, so the `mx.slice_update` accumulation this
   release makes unconditional is now belt-and-braces on 0.32.x rather than load-bearing.
+  Timed on an otherwise idle Mac mini (M4) with two `uv` environments identical except
+  for MLX, arms alternating each round: 6.757 s median on 0.31.2 vs 6.647 s on 0.32.2
+  over 16 timed separations each (+/-2.2% and +/-1.9% spread), i.e. **1.02x** with
+  median and best agreeing. Peak memory 4.67 GB on both. Upgrading is safe on speed.
+- A Demucs cache written by a different MLX version no longer prints
+  `Consider reconverting`. The check compared version strings exactly and advised a
+  torch-requiring, multi-minute reconversion on any difference. It is wrong: one cache
+  produces bit-identical stems (0.000e+00, and deterministic run to run) under both
+  0.31.2 and 0.32.2, and the strict loader added this release already raises on a
+  genuinely incompatible cache. A warning now fires only when a version is outside the
+  supported range, and goes through `warnings.warn` rather than `print`.
 
 ## 0.1.7 - 2026-08-12
 
