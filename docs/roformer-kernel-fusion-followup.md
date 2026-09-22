@@ -22,7 +22,8 @@ via deeper kernel fusion in MDXC/Roformer inference.
 
 Proceed only if the candidate demonstrates:
 
-1. `> 5%` additional median end-to-end speedup over `latency_safe_v3`
+1. `> 5%` additional median end-to-end speedup over the shipped defaults
+   (what `latency_safe_v3` used to enable is the default as of 0.1.8)
    on `BS-Roformer-SW.ckpt` FLAC workflow.
 2. Output parity within strict tolerance (target `max rel L2 <= 1e-6`).
 3. No regressions in existing MDXC correctness tests.

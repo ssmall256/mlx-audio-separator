@@ -3,11 +3,14 @@
 ## Objective
 
 Explore, apply, and measure opt-in no-drift optimizations for
-`BS-Roformer-SW.ckpt`, with a strict promotion process relative to
-`speed_mode=latency_safe_v3`.
+`BS-Roformer-SW.ckpt`, with a strict promotion process relative to the
+shipped defaults.
 
-Current decision status: `latency_safe_v3` remains the only promoted runtime
-optimization for BS-Roformer-SW.
+Current decision status: what `latency_safe_v3` used to promote -- `deferred`
+cache clearing and async stem writes -- became the default in 0.1.8, and
+`speed_mode` is deprecated and ignored. Measure against the defaults; the
+baseline configs in `scripts/perf/configs/` now say `speed_mode: "default"`,
+which is what every profile resolves to. See `docs/tuning.md`.
 
 ## Gating
 
@@ -62,5 +65,7 @@ Store candidate reports under:
 `decode_s`, `preprocess_s`, `inference_s`, `postprocess_s`, `write_s`, and
 `total_s`, plus p95 total.
 
-The benchmark harness now guards against accidental baseline/candidate
+The benchmark harness guards against accidental baseline/candidate
 `speed_mode` mismatch unless `--allow-speed-mode-mismatch` is explicitly set.
+Since 0.1.8 every `speed_mode` resolves to the same configuration, so this
+guard no longer distinguishes anything; it stays until the option is removed.

@@ -182,9 +182,10 @@ uv run --with torch python scripts/perf/compare_latency.py \
 
 ## BS-Roformer-SW Optimization Program (Opt-In Tracks)
 
-As of March 4, 2026, `latency_safe_v3` remains the only promoted runtime win
-for `BS-Roformer-SW.ckpt`; all experimental tracks below are parked pending new
-evidence.
+As of 0.1.8, what `latency_safe_v3` promoted -- `deferred` cache clearing and
+async stem writes -- is the default for every model, and `--speed_mode` is
+deprecated and ignored. Measure candidates against the defaults. All
+experimental tracks below remain parked pending new evidence.
 
 Candidate configs for staged exploration live under `scripts/perf/configs/`:
 

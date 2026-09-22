@@ -6,8 +6,8 @@ Wave 4 is performance work after release stabilization. All new behavior remains
 
 | Control | Scope | Status | Notes |
 |---|---|---|---|
-| `--speed_mode latency_safe_v2` | Runtime profile | Active (opt-in) | Experimental release profile; defaults unchanged. |
-| `--speed_mode latency_safe_v3` | Runtime profile | Active (opt-in) | FLAC-focused no-drift profile (`deferred` cache clears + `write_workers=2`). |
+| ~~`--speed_mode latency_safe_v2`~~ | Runtime profile | **Deprecated, ignored (0.1.8)** | Raised the Demucs batch to 12, which measures ~10x slower than the default of 2. Resolves to the defaults. |
+| ~~`--speed_mode latency_safe_v3`~~ | Runtime profile | **Promoted to default (0.1.8)** | `deferred` cache clears + `write_workers=2` are now the defaults; the profile itself is deprecated and ignored. |
 | `--auto_tune_batch` | Runtime profile | Active (opt-in) | Per-arch auto-tuning probe path. |
 | `--experimental_vectorized_chunking` | MDXC | Active (opt-in) | Experimental MDXC chunk scheduler path. |
 | `--experimental_roformer_fast_norm` | Roformer (MDXC path) | Active (opt-in) | Uses `mx.fast.rms_norm` in Roformer `L2Norm` blocks. |
@@ -33,7 +33,7 @@ Wave 4 is performance work after release stabilization. All new behavior remains
 ## 1) Adaptive Runtime Profiles
 
 1. Add optional profile variants under `performance_params` and CLI:
-   - `speed_mode=latency_safe_v2` (opt-in)
+   - ~~`speed_mode=latency_safe_v2`~~ (deprecated and ignored as of 0.1.8)
    - `auto_tune_batch=true` with per-arch candidate constraints
    - `experimental_vectorized_chunking=true` (MDXC-only experimental data path)
 2. Keep current defaults unchanged.

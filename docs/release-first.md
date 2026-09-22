@@ -81,7 +81,7 @@ uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_
   --corpus-file /path/to/corpus.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
   --model-file-dir /tmp/audio-separator-models \
-  --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
+  --mlx-config '{"output_format":"WAV","performance_params":{}}' \
   --pas-config '{"output_format":"WAV"}' \
   --warmup 1 \
   --order-repeats 1 \
@@ -100,7 +100,7 @@ uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_
   --corpus-file /tmp/corpus_one.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
   --model-file-dir /tmp/audio-separator-models \
-  --mlx-config '{"output_format":"WAV","performance_params":{"speed_mode":"latency_safe","cache_clear_policy":"deferred"}}' \
+  --mlx-config '{"output_format":"WAV","performance_params":{}}' \
   --pas-config '{"output_format":"WAV"}' \
   --threshold-rel-l2 5e-2 \
   --fail-fast \

@@ -15,6 +15,7 @@ import mlx_audio_separator.demucs_mlx.metal_kernels as mk
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_SHIFT_SEED,
+    DEFAULT_VR_BATCH_SIZE,
 )
 from mlx_audio_separator.utils.performance import (
     apply_experimental_env,
@@ -209,3 +210,16 @@ def test_shipped_perf_configs_do_not_pin_a_deprecated_speed_mode():
         if "latency_safe" in mode:
             offenders.append(os.path.basename(path))
     assert offenders == [], f"configs pin a deprecated speed_mode: {offenders}"
+
+
+def test_vr_batch_size_default_is_measured():
+    """Batch 1 was never fastest; 2 wins on short clips and is within 0.02 s of
+    batch 4's best on long ones for 2.5 GB less peak memory."""
+    assert DEFAULT_VR_BATCH_SIZE == 2
+
+
+def test_vr_batch_default_is_used_by_cli_and_core(tmp_path):
+    from mlx_audio_separator.core import Separator
+
+    sep = Separator(info_only=True, model_file_dir=str(tmp_path / "m"))
+    assert sep.arch_specific_params["VR"]["batch_size"] == DEFAULT_VR_BATCH_SIZE

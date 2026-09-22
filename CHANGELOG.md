@@ -40,6 +40,14 @@ All notable changes to this project are documented in this file.
   users to set and which therefore could never work. Six of the ten have no CLI flag, so
   the environment was the only way to reach them. A variable is now only written when the
   caller actually supplied the corresponding `performance_params` key.
+- **VR batch size default is 2, was 1.** Measured through `metalq` on
+  `UVR-BVE-4B_SN-44100-2`: 2.975 s vs 3.488 s on a 45 s clip and 16.364 s vs 17.946 s on
+  a 195 s one, for 5.00 GB vs 3.24 GB peak. Batch 1 is never the fastest option. Batch 4
+  is marginally quicker on long inputs (15.073 s) but costs another 2.5 GB, which is the
+  wrong trade for a default on a 16 GB machine; batch 8 is slower than 1. Output across
+  every batch size differs by at most 3.052e-05, exactly one pcm16 LSB -- encoding
+  rounding, not divergence. The retired `latency_safe_v2` profile had used 2 here, but it
+  was never measured and never the default.
 - **`deferred` cache clearing and 2 stem-writer threads are now the defaults.** Measured
   on a 195 s track to FLAC: 21.0 s against 22.4-25.3 s, bit-identical output (max abs
   diff 0.000e+00 on every stem), ~70 MB more peak RSS. This was the only thing

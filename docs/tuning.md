@@ -17,6 +17,7 @@ record.
 | Demucs batch size | **2** | Fastest *and* smallest: 0.872 s / 4.75 GB vs 1.870 s / 9.20 GB at batch 8 on a 45 s clip. Batch 12 is ~10x slower. |
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
+| VR batch size | **2** | Batch 1 is never fastest: 2.975 s vs 3.488 s on a 45 s clip, 16.364 s vs 17.946 s on a 195 s one. Batch 4 edges it on long inputs but costs another 2.5 GB. |
 | Roformer/MDXC precision | **bf16** | ~15% faster, and ~70 dB SNR from fp32 (max abs diff 6.1e-05, about the 16-bit LSB) -- inaudible. `--precision fp32` for exact parity work. |
 | Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
 | Stem writer threads | **2** | Same measurement: overlaps encoding with inference. |
@@ -37,7 +38,10 @@ a discoverable option. Use `--cache_clear_policy` and `--write_workers`
 directly if you need to change either.
 
 All numbers measured on Apple silicon, 128 GB, macOS 27, mlx 0.31.2, using
-`htdemucs` and `model_bs_roformer_ep_317_sdr_12.9755`.
+`htdemucs`, `model_bs_roformer_ep_317_sdr_12.9755` and
+`UVR-BVE-4B_SN-44100-2`. Benchmarks run through `metalq`, which serializes
+GPU jobs and waits for thermal cooldown between them, so timings are
+comparable rather than whatever the machine happened to be doing.
 
 ## Environment variables
 

@@ -6,6 +6,7 @@ import os
 import pytest
 
 from mlx_audio_separator.core import Separator
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_VR_BATCH_SIZE
 
 
 class TestSeparatorInit:
@@ -68,7 +69,7 @@ class TestSeparatorInit:
         assert "MDXC" in params
         assert "MDX" in params
         assert "VR" in params
-        assert params["VR"]["batch_size"] == 1
+        assert params["VR"]["batch_size"] == DEFAULT_VR_BATCH_SIZE
 
     def test_custom_vr_params(self, tmp_path):
         custom = {"batch_size": 4, "window_size": 1024, "aggression": 10,

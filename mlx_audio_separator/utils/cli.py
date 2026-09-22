@@ -7,7 +7,11 @@ import logging
 import os
 import sys
 
-from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE, DEFAULT_SHIFT_SEED
+from mlx_audio_separator.demucs_mlx.defaults import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_SHIFT_SEED,
+    DEFAULT_VR_BATCH_SIZE,
+)
 
 
 def _seed_arg(value: str):
@@ -230,7 +234,7 @@ def main():
     mdxc_params.add_argument("--mdxc_pitch_shift", type=int, default=0, help="Pitch shift in semitones (default: %(default)s).")
 
     vr_params = parser.add_argument_group("VR Architecture Parameters")
-    vr_params.add_argument("--vr_batch_size", type=int, default=1, help="Batch size (default: %(default)s).")
+    vr_params.add_argument("--vr_batch_size", type=int, default=DEFAULT_VR_BATCH_SIZE, help="Batch size (default: %(default)s).")
     vr_params.add_argument("--vr_window_size", type=int, default=512, help="Window size: 320, 512, or 1024 (default: %(default)s).")
     vr_params.add_argument("--vr_aggression", type=int, default=5, help="Extraction intensity -100 to 100 (default: %(default)s).")
     vr_params.add_argument("--vr_enable_tta", action="store_true", help="Enable Test-Time Augmentation.")

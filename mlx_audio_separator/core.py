@@ -18,7 +18,11 @@ import requests
 import yaml
 from tqdm import tqdm
 
-from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE, DEFAULT_SHIFT_SEED
+from mlx_audio_separator.demucs_mlx.defaults import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_SHIFT_SEED,
+    DEFAULT_VR_BATCH_SIZE,
+)
 from mlx_audio_separator.utils.performance import (
     PerfTraceWriter,
     clear_mlx_cache,
@@ -203,7 +207,7 @@ class Separator:
             }
         if vr_params is None:
             vr_params = {
-                "batch_size": 1, "window_size": 512, "aggression": 5,
+                "batch_size": DEFAULT_VR_BATCH_SIZE, "window_size": 512, "aggression": 5,
                 "enable_tta": False, "enable_post_process": False,
                 "post_process_threshold": 0.2, "high_end_process": False,
             }
