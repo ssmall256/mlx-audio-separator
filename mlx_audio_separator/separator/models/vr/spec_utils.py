@@ -83,7 +83,7 @@ def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False):
 
     transform = _get_transform(n_fft, hop_length)
     wave_mx = mx.stack([wave_left, wave_right])  # (2, T)
-    spec_mx = transform.stft(wave_mx)  # (2, F, frames) complex
+    spec_mx = transform.stft(wave_mx, output_layout="bfn")  # (2, F, frames) complex
     spec = np.array(spec_mx)  # back to numpy for combine_spectrograms
 
     if is_v51_model:
@@ -101,7 +101,7 @@ def spectrogram_to_wave(spec, hop_length=1024, mp=None, band=0, is_v51_model=Tru
 
     transform = _get_transform(n_fft, hop_length)
     spec_mx = mx.array(np.stack([spec_left, spec_right]))  # (2, F, T) complex
-    wave_mx = transform.istft(spec_mx)  # (2, T)
+    wave_mx = transform.istft(spec_mx, input_layout="bfn")  # (2, T)
     wave_left = np.array(wave_mx[0])
     wave_right = np.array(wave_mx[1])
 

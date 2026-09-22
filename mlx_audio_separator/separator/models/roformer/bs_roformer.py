@@ -989,7 +989,7 @@ class BSRoformerMLX(nn.Module):
 
 
         # Batch STFT to avoid per-channel Python loops.
-        stft_complex = self._stft_transform.stft(audio_flat)  # (b*c, F, N) complex
+        stft_complex = self._stft_transform.stft(audio_flat, output_layout="bfn")  # (b*c, F, N) complex
         stft_real = mx.stack([stft_complex.real, stft_complex.imag], axis=-1)  # (b*c, F, N, 2)
 
         # Reshape: First unpack (b*c) to (b, c), then merge (f, c) to (f*c)
@@ -1032,6 +1032,7 @@ class BSRoformerMLX(nn.Module):
         recon_audio = self._stft_transform.istft(
             stft_masked,
             length=original_length,
+            input_layout="bfn",
         )
         recon_audio = rearrange(recon_audio, "(b n c) t -> b n c t",
                                b=batch_size, n=self.num_stems, c=self.audio_channels)

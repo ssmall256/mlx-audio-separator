@@ -51,7 +51,7 @@ class STFT:
         x_flat = mx.reshape(x, (N * C, T))
 
         # STFT → (N*C, F, frames) complex
-        spec_complex = self._transform.stft(x_flat)
+        spec_complex = self._transform.stft(x_flat, output_layout="bfn")
 
         # Convert to real representation (N*C, F, frames, 2)
         spec = mx.stack([spec_complex.real, spec_complex.imag], axis=-1)
@@ -108,7 +108,7 @@ class STFT:
         spec_flat = mx.reshape(spec_complex, (flat * 2, self.n_bins, frames))
 
         # Inverse STFT
-        audio = self._transform.istft(spec_flat)
+        audio = self._transform.istft(spec_flat, input_layout="bfn")
 
         # Reshape to (..., 2, T)
         T = audio.shape[-1]

@@ -98,7 +98,7 @@ def spectro(
     if x.ndim == 3:
         B, C, T = x.shape
         x2 = mx.contiguous(x).reshape(B * C, T)
-        spec2 = transform.stft(x2)
+        spec2 = transform.stft(x2, output_layout="bfn")
         # [B*C, F, N] → [B, C, F, N]
         return spec2.reshape(B, C, spec2.shape[1], spec2.shape[2])
 
@@ -109,7 +109,7 @@ def spectro(
     elif x.ndim != 2:
         raise ValueError(f"spectro expects [T], [B,T], or [B,C,T], got {x.shape}")
 
-    spec = transform.stft(x)
+    spec = transform.stft(x, output_layout="bfn")
     return mx.squeeze(spec, axis=0) if orig_1d else spec
 
 
@@ -170,6 +170,9 @@ def ispectro(
     )
 
     istft_kw = dict(
+        # Demucs reshapes on the frequency axis (see the [..., :-1, :] Nyquist
+        # drop in mlx_htdemucs/mlx_hdemucs), so the layout is load-bearing.
+        input_layout="bfn",
         length=length,
         torch_like=bool(torch_like),
         allow_fused=_resolve_demucs_istft_allow_fused(bool(allow_fused)),

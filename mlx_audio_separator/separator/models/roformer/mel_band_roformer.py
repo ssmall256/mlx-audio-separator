@@ -331,7 +331,7 @@ class MelBandRoformerMLX(nn.Module):
 
         # STFT
         audio_flat = rearrange(raw_audio, "b c t -> (b c) t")
-        stft_complex = self._stft_transform.stft(audio_flat)  # (b*c, F, T) complex
+        stft_complex = self._stft_transform.stft(audio_flat, output_layout="bfn")  # (b*c, F, T) complex
         stft_real = mx.stack([stft_complex.real, stft_complex.imag], axis=-1)  # (b*c, F, T, 2)
 
         # Reshape to (b, c, F, T, 2) then interleave to (b, F*c, T, 2)
@@ -381,7 +381,9 @@ class MelBandRoformerMLX(nn.Module):
 
         original_length = raw_audio.shape[-1]
         istft_length = original_length if self.match_input_audio_length else None
-        recon_audio = self._stft_transform.istft(stft_masked, length=istft_length)
+        recon_audio = self._stft_transform.istft(
+            stft_masked, length=istft_length, input_layout="bfn"
+        )
         recon_audio = rearrange(
             recon_audio,
             "(b n c) t -> b n c t",
