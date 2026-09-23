@@ -26,10 +26,13 @@ All notable changes to this project are documented in this file.
   clip, the precision half is right and the speed half is not:
   - **On BS-Roformer the cast is real and costs 78.1 dB** SNR from fp32 (max abs
     diff 4.4e-04), so the documented ~70 dB was honest.
-  - **It buys no measurable time.** In a rotated, one-process-per-arm run with
-    three identical fp32 control arms (noise floor **6.51%**: 10.664 / 10.275 /
-    10.959 s), bf16 landed at 10.328 s — **+1.8%, inside the floor**, in the same
-    direction as the controls' own scatter. "~15% faster" is not what was measured.
+  - **It buys nothing.** On an idle M4 mini, a rotated one-process-per-arm run
+    with three identical fp32 control arms gave a **0.04%** noise floor (7.340 /
+    7.341 / 7.343 s). bf16 activations landed at **7.341 s — dead on the
+    control**. Casting the weights too, so the matmuls genuinely are half
+    precision, measured 7.366 s for both bf16 and fp16: **0.3% slower**.
+    "~15% faster" is not what happens. The same harness on a loaded dev Mac
+    reports a 6.5% floor and cannot answer this at all.
   - **For mel-band models the switch is never read.** `create_mel_band_roformer_mlx`
     set `MLX_ENABLE_AMP`, but `mel_band_roformer.py` contains no reference to it.
     Output with AMP on is byte-identical to fp32 — max abs diff **0.00e+00**.

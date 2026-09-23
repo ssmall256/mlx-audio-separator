@@ -57,12 +57,14 @@ def detect_model_type(model_path: str, config: Dict[str, Any]) -> str:
 #   * On BS-Roformer, where `bs_roformer.py` does read it, the cast is real:
 #     78.1 dB SNR from fp32 on a 30 s clip (max abs diff 4.4e-04). So the
 #     documented ~70 dB was honest.
-#   * But it buys no measurable time. Three identical fp32 arms in a rotated,
-#     one-process-per-arm run gave a 6.51% noise floor (10.664 / 10.275 /
-#     10.959 s); bf16 landed at 10.328 s, +1.8% against the pooled control --
-#     inside the floor, in the same direction as the controls' own scatter.
-#     Whatever the effect is, it is smaller than this harness can resolve, and
-#     "~15% faster" is not what was measured.
+#   * But it buys nothing. On an idle M4 mini, three identical fp32 arms in a
+#     rotated, one-process-per-arm run gave a **0.04%** noise floor (7.340 /
+#     7.341 / 7.343 s). bf16 activations landed at 7.341 s -- dead on the
+#     control, not merely inside a loose bound. Casting the weights too, so the
+#     matmuls really are half precision, came in at 7.366 s for both bf16 and
+#     fp16: 0.3% slower. "~15% faster" is not what happens.
+#     (The same harness on a loaded dev Mac reports a 6.5% floor and cannot
+#     answer this at all, which is why it had to move.)
 #   * The mechanism says it cannot be large: the cast covers activations only
 #     and leaves the weights in float32, and MLX promotes bf16 @ fp32 back to
 #     float32. No matmul runs in half precision. At 2048x2048 the cast alone

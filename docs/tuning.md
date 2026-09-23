@@ -20,7 +20,7 @@ record.
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
 | VR batch size | **2** | Batch 1 is never fastest: 2.975 s vs 3.488 s on a 45 s clip, 16.364 s vs 17.946 s on a 195 s one. Batch 4 edges it on long inputs but costs another 2.5 GB. |
-| Roformer/MDXC precision | **fp32** | bf16 was the default on a "~15% faster, ~70 dB" claim. The precision half is right for BS-Roformer (78.1 dB). The speed half is not: in a rotated run with three identical fp32 control arms (noise floor 6.51%), bf16 came in at +1.8% -- inside the floor. And for mel-band models the switch is never read at all, so output is byte-identical to fp32. Mechanically it cannot be large: the cast covers activations only, and MLX promotes `bf16 @ fp32` back to fp32, so no matmul runs in half precision. `--precision bf16` still available. |
+| Roformer/MDXC precision | **fp32** | bf16 was the default on a "~15% faster, ~70 dB" claim. The precision half is right for BS-Roformer (78.1 dB). The speed half is not: on an idle M4 mini with three identical fp32 control arms (noise floor **0.04%**), bf16 landed dead on the control -- 7.341 s against 7.340/7.341/7.343 s. Casting weights too is 0.3% slower. And for mel-band models the switch is never read at all, so output is byte-identical to fp32. Mechanically it cannot be large: the cast covers activations only, and MLX promotes `bf16 @ fp32` back to fp32, so no matmul runs in half precision. `--precision bf16` still available. |
 | Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
 | Stem writer threads | **2** | Same measurement: overlaps encoding with inference. |
 | Overlap-add accumulation | `mx.slice_update` | Correct on every supported MLX version. MLX before 0.32.0 corrupts strided slice scatter-add. |
@@ -93,6 +93,17 @@ mlx-audio-separator input.wav --precision fp32
 defaults, those four together move the result by well under 1 dB -- the ~20 dB
 gap they used to close came entirely from the fused GroupNorm kernels, which
 are now off by default.
+
+### BS-Roformer already has its compile win
+
+`MLX_ENABLE_COMPILE=1` (set by the Roformer loader) compiles
+`_forward_transformers`, and that is worth **23%**: turning it off measures
+9.038 s against a 7.343/7.352/7.351 s control at a 0.12% noise floor.
+Extending compilation to the whole `__call__` adds **0.2%** — nothing.
+
+This is the opposite of Demucs, which had no compiled graph at all until 0.1.8
+and gained 15.9% from one. If you are looking for headroom, look where nothing
+is compiled, not where something already is.
 
 ## Measuring a change here
 
