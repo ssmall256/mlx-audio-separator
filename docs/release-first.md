@@ -28,7 +28,7 @@ Run full benchmark:
 ```bash
 uv run python -m mlx_audio_separator.utils.cli \
   --benchmark "/path/to/mixture.wav" \
-  --model_file_dir /tmp/audio-separator-models \
+  --model_file_dir ~/.cache/mlx-audio-separator/models \
   --benchmark_skip_download \
   --benchmark_warmup 1 \
   --benchmark_repeats 2 \
@@ -80,7 +80,7 @@ PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
 uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_abba.py \
   --corpus-file /path/to/corpus.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
-  --model-file-dir /tmp/audio-separator-models \
+  --model-file-dir ~/.cache/mlx-audio-separator/models \
   --mlx-config '{"output_format":"WAV","performance_params":{}}' \
   --pas-config '{"output_format":"WAV"}' \
   --warmup 1 \
@@ -99,7 +99,7 @@ PATH="/usr/local/bin:/opt/homebrew/bin:$PATH" \
 uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_parity.py \
   --corpus-file /tmp/corpus_one.txt \
   --models htdemucs_ft.yaml,model_bs_roformer_ep_317_sdr_12.9755.ckpt,mel_band_roformer_instrumental_instv7n_gabox.ckpt,UVR-MDX-NET-Inst_HQ_3.onnx \
-  --model-file-dir /tmp/audio-separator-models \
+  --model-file-dir ~/.cache/mlx-audio-separator/models \
   --mlx-config '{"output_format":"WAV","performance_params":{}}' \
   --pas-config '{"output_format":"WAV"}' \
   --threshold-rel-l2 5e-2 \

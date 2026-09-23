@@ -114,6 +114,17 @@ costs no reconversion. Nothing is written there any more: the demucs-mlx package
 keeps its own cache in that directory under a different schema, and with both
 packages installed each used to rebuild what the other had just written.
 
+## Where downloaded models live
+
+`~/.cache/mlx-audio-separator/models`, or `--model_file_dir` /
+`AUDIO_SEPARATOR_MODEL_DIR`. This was `/tmp/audio-separator-models/` before
+0.1.13: macOS clears `/tmp` on boot, so every reboot cost a re-download, and
+`/tmp` is world-writable, which is the wrong place for a cache the downloader
+reuses without checking. Files already in the old directory — including the
+converted `.safetensors` the loaders write beside a checkpoint — are hard-linked
+across on first use, so nothing is downloaded or converted twice and nothing
+extra is stored.
+
 ## Measuring a change here
 
 Use `scripts/perf/ab_harness.py`. It runs one process per arm, rotates the arm

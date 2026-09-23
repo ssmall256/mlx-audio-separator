@@ -8,6 +8,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
 import time
 import warnings
@@ -20,8 +21,10 @@ from tqdm import tqdm
 
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_MODEL_FILE_DIR,
     DEFAULT_SHIFT_SEED,
     DEFAULT_VR_BATCH_SIZE,
+    LEGACY_MODEL_FILE_DIR,
 )
 from mlx_audio_separator.utils.performance import (
     PerfTraceWriter,
@@ -83,7 +86,7 @@ class Separator:
         self,
         log_level=logging.INFO,
         log_formatter=None,
-        model_file_dir="/tmp/audio-separator-models/",
+        model_file_dir=None,
         output_dir=None,
         output_format="WAV",
         output_bitrate=None,
@@ -143,9 +146,21 @@ class Separator:
             self.logger.info(f"Using model directory from AUDIO_SEPARATOR_MODEL_DIR env var: {self.model_file_dir}")
             if not os.path.exists(self.model_file_dir):
                 raise FileNotFoundError(f"The specified model directory does not exist: {self.model_file_dir}")
+        elif model_file_dir is None:
+            self.model_file_dir = DEFAULT_MODEL_FILE_DIR
+            self.logger.info(f"Using default model directory: {self.model_file_dir}")
         else:
             self.logger.info(f"Using model directory from model_file_dir parameter: {model_file_dir}")
             self.model_file_dir = model_file_dir
+
+        # Adopt files already downloaded to the old default, but only when the
+        # caller did not name a directory -- their choice wins.
+        self._legacy_model_file_dir = (
+            LEGACY_MODEL_FILE_DIR
+            if (model_file_dir is None and not env_model_dir
+                and os.path.isdir(LEGACY_MODEL_FILE_DIR))
+            else None
+        )
 
         os.makedirs(self.model_file_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
@@ -482,9 +497,62 @@ class Separator:
             self.logger.error(f"Error calculating hash for {model_path}: {e}")
             raise
 
+    def _link_from_legacy_model_dir(self, output_path) -> bool:
+        """Hard-link one file out of the old `/tmp` default into its new home.
+
+        Hard-link when the two live on one filesystem, which on macOS they
+        normally do, and copy otherwise. The old file is left where it is;
+        `/tmp` will clear it.
+        """
+        legacy_dir = getattr(self, "_legacy_model_file_dir", None)
+        if not legacy_dir:
+            return False
+        legacy_path = os.path.join(legacy_dir, os.path.basename(str(output_path)))
+        if not os.path.isfile(legacy_path) or os.path.isfile(output_path):
+            return False
+        try:
+            os.makedirs(os.path.dirname(str(output_path)) or ".", exist_ok=True)
+            try:
+                os.link(legacy_path, output_path)
+            except OSError:
+                shutil.copyfile(legacy_path, output_path)
+        except Exception as e:
+            self.logger.debug(f"Could not reuse {legacy_path}: {e}")
+            return False
+        self.logger.info(f"Reusing {legacy_path} instead of downloading it again.")
+        return True
+
+    def _adopt_legacy_converted_weights(self, output_path) -> None:
+        """Bring across the converted `<model>.safetensors` beside a model file.
+
+        The MDX/MDXC/VR/Roformer loaders write their MLX conversion next to the
+        checkpoint and load it in preference to it, so it is never downloaded
+        and the download path alone would not migrate it. Leaving it behind
+        would make a torch-free install fail with "PyTorch is required for
+        initial weight conversion" on a model that worked yesterday.
+        """
+        base, ext = os.path.splitext(str(output_path))
+        if ext.lower() in {"", ".safetensors", ".json", ".yaml", ".yml"}:
+            return
+        self._link_from_legacy_model_dir(base + ".safetensors")
+
+    def _adopt_legacy_model_file(self, output_path) -> bool:
+        """Reuse a model already downloaded to the old `/tmp` default.
+
+        Moving the default must not make everyone re-download several
+        gigabytes, nor reconvert what they have already converted.
+        """
+        adopted = self._link_from_legacy_model_dir(output_path)
+        self._adopt_legacy_converted_weights(output_path)
+        return adopted
+
     def download_file_if_not_exists(self, url, output_path):
         if os.path.isfile(output_path):
             self.logger.debug(f"File already exists at {output_path}, skipping download")
+            self._adopt_legacy_converted_weights(output_path)
+            return
+
+        if self._adopt_legacy_model_file(output_path):
             return
 
         self.logger.debug(f"Downloading file from {url} to {output_path} with timeout 300s")

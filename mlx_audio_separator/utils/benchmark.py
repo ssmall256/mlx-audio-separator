@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 from statistics import median
 
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_MODEL_FILE_DIR
 from mlx_audio_separator.utils.performance import clear_mlx_cache
 
 _CORRUPT_MODEL_ERROR_SNIPPETS = (
@@ -166,7 +167,7 @@ def _enable_strict_benchmark_diagnostics(separator) -> None:
 def run_benchmark(
     audio_file,
     output_dir=None,
-    model_file_dir="/tmp/audio-separator-models/",
+    model_file_dir=None,
     cooldown=15.0,
     wait_nominal=False,
     skip_download=False,
@@ -218,6 +219,7 @@ def run_benchmark(
 
     # Skip download: filter to models that already exist on disk
     if skip_download:
+        model_file_dir = model_file_dir or DEFAULT_MODEL_FILE_DIR
         before = len(model_list)
         model_list = {
             fn: info for fn, info in model_list.items()

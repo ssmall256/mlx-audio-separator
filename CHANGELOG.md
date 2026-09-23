@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.13 - 2026-09-23
+
+### Changed
+
+- **Downloaded models no longer default into `/tmp`.** `model_file_dir`
+  defaulted to `/tmp/audio-separator-models/`. macOS clears `/tmp` on boot, so
+  every reboot cost a multi-gigabyte re-download, and `/tmp` is world-writable:
+  whichever user creates that directory first owns it, and
+  `download_file_if_not_exists` returns early for any file already at the target
+  path without checking it. Every checkpoint load is `weights_only=True` or
+  protobuf parsing, so a planted file means wrong output rather than code
+  execution — but a cache in a directory another user controls is still the
+  wrong place for it. The default is now
+  `~/.cache/mlx-audio-separator/models`; `--model_file_dir` and
+  `AUDIO_SEPARATOR_MODEL_DIR` are unchanged and still win. Files in the old
+  directory — including the converted `.safetensors` the loaders write beside a
+  checkpoint, which is never downloaded and would otherwise have made a
+  torch-free install reconvert — are hard-linked across on first use, so nothing
+  is fetched or converted twice and no extra disk is used.
+
 ## 0.1.12 - 2026-09-23
 
 ### Fixed

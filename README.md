@@ -178,7 +178,7 @@ uv run --with torch python scripts/perf/compare_latency.py \
   --corpus-file /tmp/corpus_one.txt \
   --baseline-config scripts/perf/configs/bs_roformer_sw_default_baseline.json \
   --candidate-config scripts/perf/configs/bs_roformer_sw_latency_safe_v3_candidate.json \
-  --model-file-dir /tmp/audio-separator-models \
+  --model-file-dir ~/.cache/mlx-audio-separator/models \
   --allow-speed-mode-mismatch \
   --target-improvement-demucs-mdxc 10.0 \
   --equivalence-check \
@@ -214,7 +214,7 @@ uv run --with torch python scripts/perf/compare_latency.py \
   --corpus-file scripts/perf/corpora/bs_roformer_sw_quick.txt \
   --baseline-config scripts/perf/configs/bs_roformer_sw_latency_safe_v3_baseline.json \
   --candidate-config scripts/perf/configs/bs_roformer_sw_cand_grouped_bandmask.json \
-  --model-file-dir /tmp/audio-separator-models \
+  --model-file-dir ~/.cache/mlx-audio-separator/models \
   --target-improvement-demucs-mdxc 3.0 \
   --equivalence-check \
   --equivalence-threshold-rel-l2 1e-6 \
@@ -230,7 +230,7 @@ uv run --with torch python scripts/perf/compare_latency.py \
   --corpus-file scripts/perf/corpora/bs_roformer_sw_full.txt \
   --baseline-config scripts/perf/configs/bs_roformer_sw_latency_safe_v3_baseline.json \
   --candidate-config scripts/perf/configs/bs_roformer_sw_cand_grouped_bandmask.json \
-  --model-file-dir /tmp/audio-separator-models \
+  --model-file-dir ~/.cache/mlx-audio-separator/models \
   --target-improvement-demucs-mdxc 5.0 \
   --equivalence-check \
   --equivalence-threshold-rel-l2 1e-6 \

@@ -9,6 +9,7 @@ import sys
 
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_MODEL_FILE_DIR,
     DEFAULT_SHIFT_SEED,
     DEFAULT_VR_BATCH_SIZE,
 )
@@ -73,7 +74,11 @@ def main():
     io_params.add_argument("--output_format", default="FLAC", help="Output format (default: %(default)s).")
     io_params.add_argument("--output_bitrate", default=None, help="Output bitrate (default: %(default)s).")
     io_params.add_argument("--output_dir", default=None, help="Output directory (default: current dir).")
-    io_params.add_argument("--model_file_dir", default="/tmp/audio-separator-models/", help="Model files directory (default: %(default)s).")
+    io_params.add_argument(
+        "--model_file_dir",
+        default=None,
+        help=f"Model files directory (default: {DEFAULT_MODEL_FILE_DIR}).",
+    )
     io_params.add_argument("--download_model_only", action="store_true", help="Download model without performing separation.")
     io_params.add_argument(
         "--save_converted_safetensors",

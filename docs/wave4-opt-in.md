@@ -103,7 +103,7 @@ uv run --with torch python scripts/perf/compare_latency.py \
   --corpus-file /tmp/corpus_one.txt \
   --baseline-config scripts/perf/configs/roformer_fast_norm_baseline.json \
   --candidate-config scripts/perf/configs/roformer_fast_norm_candidate.json \
-  --model-file-dir /tmp/audio-separator-models \
+  --model-file-dir ~/.cache/mlx-audio-separator/models \
   --target-improvement-demucs-mdxc 2.0 \
   --equivalence-check \
   --equivalence-threshold-rel-l2 1e-3 \

@@ -7,6 +7,8 @@ batch size.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 #: Segments processed per forward pass.
 #:
 #: Measured on a 128 GB machine, htdemucs, macOS 27 / mlx 0.31.2:
@@ -45,3 +47,16 @@ DEFAULT_SHIFT_SEED = 0
 #: 16 GB machine. Output across all batch sizes differs by at most 3.052e-05,
 #: which is exactly one pcm16 LSB: encoding rounding, not divergence.
 DEFAULT_VR_BATCH_SIZE = 2
+
+#: Where downloaded MDX/MDXC/VR/Roformer model files are kept.
+#:
+#: This used to default to `/tmp/audio-separator-models/`. macOS clears `/tmp`
+#: on boot, so every reboot cost a multi-gigabyte re-download, and `/tmp` is
+#: world-writable: on a shared machine whichever user creates that directory
+#: first owns it, and the downloader trusts any file already sitting at the
+#: target path without checking it. Every checkpoint load is `weights_only=True`
+#: or protobuf parsing, so a planted file means wrong output rather than code
+#: execution -- but a cache in a directory another user controls is still the
+#: wrong place for it.
+DEFAULT_MODEL_FILE_DIR = str(Path.home() / ".cache" / "mlx-audio-separator" / "models")
+LEGACY_MODEL_FILE_DIR = "/tmp/audio-separator-models/"
