@@ -239,6 +239,30 @@ uv run --with torch python scripts/perf/compare_latency.py \
   --output-markdown /tmp/bs_roformer_sw_full_gate.md
 ```
 
+## Troubleshooting
+
+**`Symbol not found: __ZN3mlx4core6astype...` when importing, after changing
+your MLX version.** `mlx-audio-io` ships a source distribution, so its native
+extension is compiled on your machine against whichever MLX was installed at the
+time. Upgrading or downgrading MLX afterwards leaves that binary referencing
+symbols the new MLX does not export; it fails at import and names the missing
+symbol. Rebuild it against the MLX you now run:
+
+```bash
+# nanobind must match your MLX: 0.31.x -> 2.12.0, 0.32.x -> 2.15.0
+pip install "mlx==0.32.2" "nanobind==2.15.0" scikit-build-core cmake ninja delocate
+pip install --force-reinstall --no-cache-dir --no-build-isolation \
+  --no-binary mlx-audio-io mlx-audio-io
+```
+
+`cmake` and `ninja` are in that list because `--no-build-isolation` means pip
+installs nothing for the build, and `--no-cache-dir` matters because pip
+otherwise reuses the wheel it built against your previous MLX. The rebuild takes
+about ten seconds.
+
+**`MLX version mismatch: the mlx-audio-io native binary was built against ...`**
+is the same situation caught before it becomes a symbol error. Same fix.
+
 ## Documentation
 
 | Document | Description |

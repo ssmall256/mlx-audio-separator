@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.15 - 2026-09-23
+
+### Added
+
+- A Troubleshooting section covering the one upgrade hazard this stack has:
+  `mlx-audio-io` compiles its native extension on your machine against the MLX
+  installed at the time, so changing MLX afterwards leaves a binary that fails
+  at import with `Symbol not found: __ZN3mlx4core6astype...`. The rebuild recipe
+  is spelled out, including why `cmake`, `ninja` and `--no-cache-dir` are part
+  of it. Reported in #4.
+
 ## 0.1.14 - 2026-09-23
 
 ### Fixed
