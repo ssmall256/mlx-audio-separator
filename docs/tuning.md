@@ -105,6 +105,15 @@ This is the opposite of Demucs, which had no compiled graph at all until 0.1.8
 and gained 15.9% from one. If you are looking for headroom, look where nothing
 is compiled, not where something already is.
 
+## Where converted Demucs weights live
+
+`~/.cache/mlx-audio-separator/demucs`, or wherever
+`MLX_AUDIO_SEPARATOR_DEMUCS_CACHE_DIR` points. A cache left in the older
+`~/.cache/demucs-mlx` by a release before 0.1.12 is still read, so upgrading
+costs no reconversion. Nothing is written there any more: the demucs-mlx package
+keeps its own cache in that directory under a different schema, and with both
+packages installed each used to rebuild what the other had just written.
+
 ## Measuring a change here
 
 Use `scripts/perf/ab_harness.py`. It runs one process per arm, rotates the arm

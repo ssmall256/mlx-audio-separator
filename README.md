@@ -70,8 +70,15 @@ To regenerate a cache explicitly:
 ```bash
 pip install "mlx-audio-separator[convert]"
 python -m mlx_audio_separator.demucs_mlx.mlx_convert htdemucs \
-  --output-dir ~/.cache/demucs-mlx
+  --output-dir ~/.cache/mlx-audio-separator/demucs
 ```
+
+Converted Demucs weights live in `~/.cache/mlx-audio-separator/demucs`.
+`MLX_AUDIO_SEPARATOR_DEMUCS_CACHE_DIR` points that elsewhere. Caches left in the
+older `~/.cache/demucs-mlx` by a release before 0.1.12 are still read, so
+upgrading does not cost a reconversion; nothing is written there any more,
+because the demucs-mlx package uses that directory for its own differently
+shaped cache.
 
 Official Demucs downloads retain their filename hash checks and are loaded with
 PyTorch's restricted weight-only deserializer. This trusts the installed

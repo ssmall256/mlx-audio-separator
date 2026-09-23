@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.12 - 2026-09-23
+
+### Fixed
+
+- **Converted Demucs weights no longer share a directory with demucs-mlx.**
+  Both packages wrote `<model>_config.json` and `<model>.safetensors` into
+  `~/.cache/demucs-mlx` under config schemas that reject each other, and as of
+  0.1.10 and demucs-mlx 1.4.8 both rebuild a cache they cannot read -- so with
+  the two installed side by side (which is the default, since demucs-mlx does
+  not depend on mlx-weights and falls back to that directory) every alternating
+  run reconverted, each time needing torch and the upstream checkpoint. This
+  package now writes to `~/.cache/mlx-audio-separator/demucs`, and never to
+  demucs-mlx's directory. A cache left in the old location by an earlier release
+  is still read, so upgrading costs no reconversion.
+  `MLX_AUDIO_SEPARATOR_DEMUCS_CACHE_DIR` overrides the location.
+
 ## 0.1.11 - 2026-09-23
 
 ### Fixed

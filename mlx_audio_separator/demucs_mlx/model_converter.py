@@ -1,17 +1,47 @@
 """Convert PyTorch models to MLX models."""
 
 import logging
+import os
 import typing as tp
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+#: Where converted Demucs weights are written.
+#:
+#: This used to be `~/.cache/demucs-mlx`, which is the demucs-mlx package's own
+#: directory. Both packages wrote `<model>_config.json` and
+#: `<model>.safetensors` there under schemas that reject each other, and both
+#: rebuild a cache they cannot read -- so with the two installed side by side
+#: (mlx-weights absent, which is its default, since demucs-mlx does not depend
+#: on it) every alternating run reconverted, each time needing torch and the
+#: upstream checkpoint. Writing somewhere named after this package ends that.
+_CACHE_DIR_ENV = "MLX_AUDIO_SEPARATOR_DEMUCS_CACHE_DIR"
+_LEGACY_CACHE_DIR = Path.home() / ".cache" / "demucs-mlx"
+
 
 def get_mlx_cache_dir() -> Path:
     """Get or create the MLX model cache directory."""
-    cache_dir = Path.home() / '.cache' / 'demucs-mlx'
+    override = os.getenv(_CACHE_DIR_ENV, "").strip()
+    cache_dir = (
+        Path(override).expanduser()
+        if override
+        else Path.home() / ".cache" / "mlx-audio-separator" / "demucs"
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
+
+
+def _legacy_cache_dir() -> tp.Optional[Path]:
+    """The pre-0.1.12 location, read from but never written to.
+
+    Existing users keep their converted weights instead of paying for a
+    conversion they have already done. A cache demucs-mlx left there is
+    rejected as before and simply reconverted into the new directory once.
+    """
+    if os.getenv(_CACHE_DIR_ENV, "").strip():
+        return None
+    return _LEGACY_CACHE_DIR if _LEGACY_CACHE_DIR.is_dir() else None
 
 
 def get_mlx_model(name: str, repo: tp.Optional[Path] = None):
@@ -30,6 +60,16 @@ def get_mlx_model(name: str, repo: tp.Optional[Path] = None):
         model = load_mlx_model(name, cache_dir=str(cache_dir), auto_convert=False, verbose=False)
         return model
     except FileNotFoundError:
+        legacy = _legacy_cache_dir()
+        if legacy is not None:
+            try:
+                model = load_mlx_model(
+                    name, cache_dir=str(legacy), auto_convert=False, verbose=False
+                )
+                logger.info("Using the cache for '%s' in %s.", name, legacy)
+                return model
+            except (FileNotFoundError, SafeCacheError) as exc:
+                logger.debug("No usable cache for '%s' in %s (%s).", name, legacy, exc)
         # If we are here, the model is missing.
         logger.info("Cache miss for '%s'. Converting from PyTorch...", name)
     except SafeCacheError as exc:

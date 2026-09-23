@@ -21,6 +21,9 @@ def converting(monkeypatch, tmp_path):
     """Record whether conversion ran, and how often the model was loaded."""
     calls = {"converted": 0, "loads": 0}
     monkeypatch.setattr(model_converter, "get_mlx_cache_dir", lambda: tmp_path)
+    # Keep the real ~/.cache/demucs-mlx read-through out of these cases; it is
+    # covered by tests/test_cache_dir_namespacing.py.
+    monkeypatch.setattr(model_converter, "_legacy_cache_dir", lambda: None)
     monkeypatch.setattr(
         mlx_convert, "convert_htdemucs_weights",
         lambda *a, **k: calls.__setitem__("converted", calls["converted"] + 1),
