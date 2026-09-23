@@ -106,7 +106,19 @@ jobs:
             echo "Expected exactly one mlx-audio-separator ${PACKAGE_VERSION} distribution, found ${#dists[@]}" >&2
             exit 1
           fi
-          python -m pip install --no-cache-dir --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ "${dists[0]}"
+          # The wait only proves this package has propagated; a freshly
+          # published dependency can still be missing from the mirror pip
+          # resolves against. A resolution failure costs nothing, so retry.
+          for attempt in {1..8}; do
+            if python -m pip install --no-cache-dir --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ "${dists[0]}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 8 ]; then
+              echo "Could not install ${dists[0]}" >&2
+              exit 1
+            fi
+            sleep 15
+          done
 
       - name: Smoke test
         run: |
