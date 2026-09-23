@@ -47,12 +47,26 @@ def _fused_groupnorm_mode() -> str:
 
     These kernels were on by default until they were measured. On a 45 s clip
     through htdemucs, enabling them costs ~20 dB SNR against the unfused path
-    (19.7 dB on drums, 23.7 dB on other) -- audible, not float noise -- because
-    the kernel uses an erf-approximation GELU and threadgroup reductions whose
-    width varies with tensor shape. They are also not faster: median 0.783 s
-    fused vs 0.776 s unfused over five timed runs, since at real Demucs shapes
-    `elems_per_group` mostly exceeds the hybrid threshold and falls back
-    anyway. Strictly worse on both axes, so they are opt-in now.
+    (19.7 dB on drums, 23.7 dB on other) -- audible, not float noise. They are
+    also not faster: median 0.783 s fused vs 0.776 s unfused over five timed
+    runs. Strictly worse on both axes, so they are opt-in now.
+
+    Two things contribute, in very different proportions:
+
+    * The reduction reuses `shared_sums[0]` across passes. Every simdgroup
+      reads it as the mean, then simdgroup 0 overwrites it with its pass-2
+      partial before any barrier, so a lagging simdgroup can read a corrupted
+      mean and poison a whole (batch, group) slab. That is shape- and
+      occupancy-dependent, and it is large enough to explain the SNR.
+    * The GELU uses an Abramowitz & Stegun erf polynomial where the unfused
+      path calls `mx.erf`. That is a real and unnecessary parity gap, but at
+      ~1e-7 it is about six orders of magnitude too small to account for 20 dB.
+
+    Note this module has no size threshold, unlike demucs-mlx, which routes
+    groups above 32768 elements to a pure-MLX fallback. Here every call runs
+    the kernel, including single-threadgroup reductions over ~500k elements --
+    which is the opposite of "it mostly falls back anyway", and the reason the
+    default matters more here.
     """
     raw_env = os.getenv("MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE")
     if raw_env is None or raw_env.strip() == "":
@@ -214,7 +228,8 @@ def fused_glu(x: mx.array, axis: int = 1) -> mx.array:
 
 
 # ==============================================================================
-# Fused GroupNorm + GELU (erf-based, matching MLX's nn.gelu exactly)
+# Fused GroupNorm + GELU (erf-based, approximating MLX's nn.gelu -- see the
+# A&S note below; it is not exact)
 # ==============================================================================
 # Each threadgroup handles one (batch, group) pair.
 # Uses simdgroup reductions for mean/variance.
@@ -307,7 +322,8 @@ for (uint i = tid; i < elems_per_group; i += tg_size) {
     uint c_global = group_idx * channels_per_group + c_local;
     float val = ((float)x[base + i] - mean) * inv_std;
     val = val * (float)weight[c_global] + (float)bias[c_global];
-    // Exact GELU: 0.5 * x * (1 + erf(x / sqrt(2)))
+    // GELU via the A&S erf approximation above, NOT mx.erf: this differs
+    // from the unfused path by ~1e-7. See _fused_groupnorm_mode.
     val = 0.5f * val * (1.0f + erf_approx(val * rsqrt2));
     out[base + i] = (T)val;
 }
