@@ -13,14 +13,14 @@ record.
 
 | Setting | Default | Why |
 |---|---|---|
-| Demucs compiled forward | **on** | `mx.compile` on the model forward: +15.9% end to end, +16.8% with the flush below. Faster on the first call too, so no cold-start cost. Output 107-115 dB SNR from eager (fusion reassociates adds), verified on htdemucs, htdemucs_6s and hdemucs_mmi. `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` disables. |
+| Demucs compiled forward | **on** | `mx.compile` on the model forward: **+15.9%** end to end, +16.8% with the flush below, and faster on the first call too. Output is 107-115 dB SNR from eager (compilation reassociates float adds). `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` disables. |
 | Demucs overlap-add flush | **every update** | Was every 8. +4.3% on 60 s, output bit-identical. Sweep: 1 -> +4.3%, 2 -> +3.5%, 4 -> +1.7%, 16 -> +1.0%. |
-| Demucs fused GroupNorm/GLU kernels | **off** | Had a missing threadgroup barrier: the mean in `shared_sums[0]` could be clobbered by pass 2 before every simdgroup had read it, worst at small `elems_per_group` — the freq-branch DConv shapes. Fixed, which took end-to-end SNR from ~20 dB to **118.2 dB** and relative error from 1.6e-02 to 2.0e-07. Still off, now only because they are not *faster*: 1.7331 s against a 1.7270 s control at a 1.76% noise floor. |
+| Demucs fused GroupNorm/GLU kernels | **off** | Same speed as the unfused path on current hardware, so there is nothing to trade. `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` enables them; output matches the unfused path to ~118 dB SNR. |
 | Demucs batch size | **2** | Fastest *and* smallest: 0.872 s / 4.75 GB vs 1.870 s / 9.20 GB at batch 8 on a 45 s clip. Batch 12 is ~10x slower. |
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
 | VR batch size | **2** | Batch 1 is never fastest: 2.975 s vs 3.488 s on a 45 s clip, 16.364 s vs 17.946 s on a 195 s one. Batch 4 edges it on long inputs but costs another 2.5 GB. |
-| Roformer/MDXC precision | **fp32** | bf16 was the default on a "~15% faster, ~70 dB" claim. The precision half is right for BS-Roformer (78.1 dB). The speed half is not: on an idle M4 mini with three identical fp32 control arms (noise floor **0.04%**), bf16 landed dead on the control -- 7.341 s against 7.340/7.341/7.343 s. Casting weights too is 0.3% slower. And for mel-band models the switch is never read at all, so output is byte-identical to fp32. Mechanically it cannot be large: the cast covers activations only, and MLX promotes `bf16 @ fp32` back to fp32, so no matmul runs in half precision. `--precision bf16` still available. |
+| Roformer/MDXC precision | **fp32** | bf16 measures no faster on current hardware (within a 0.04% noise floor) and costs ~78 dB SNR, so fp32 is the better default. `--precision bf16` remains available. |
 | Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
 | Stem writer threads | **2** | Same measurement: overlaps encoding with inference. |
 | Overlap-add accumulation | `mx.slice_update` | Correct on every supported MLX version. MLX before 0.32.0 corrupts strided slice scatter-add. |
@@ -67,7 +67,7 @@ results; they exist for benchmarking, parity investigations and debugging.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `MLX_ENABLE_AMP` | `0` | bf16 transformer stack. Off by default since it measured slower, and is a no-op for mel-band models entirely. If half precision is revisited, use fp16 rather than bf16: 78.5 dB against 59.1 dB SNR from fp32 for identical matmul cost. |
+| `MLX_ENABLE_AMP` | `0` | bf16 transformer stack, read by BS-Roformer. Off by default: it measures no faster on current hardware and costs ~78 dB SNR. If half precision is revisited, fp16 is the better choice — 78.5 dB against 59.1 dB from fp32 at the same matmul cost. |
 | `MLX_USE_FAST_SDP` | `1` | `mx.fast.scaled_dot_product_attention`. |
 | `MLX_ENABLE_COMPILE` | `1` | `mx.compile` on the transformer subgraph. |
 
@@ -114,6 +114,3 @@ reports a ~40% floor and will happily show you five "wins" of 46-56%; on an idle
 M4 the same run gives 0.4-1.0%. If the floor comes back above a few percent the
 measurement is void — move machines rather than reading the table.
 
-Two Demucs "wins" of -16% and -20% in `roformer-kernel-fusion-followup.md` were
-discarded because a control arm moved. Re-measured with this harness, the -16%
-one (`DEMUCS_APPLY_CONCAT_BATCHING`) is +0.7%, inside the noise.

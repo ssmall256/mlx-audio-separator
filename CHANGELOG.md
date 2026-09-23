@@ -2,111 +2,55 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.9 - 2026-09-23
+
+### Added
+
+- **The Demucs forward is compiled.** `mx.compile` on the model forward is worth
+  **+15.9%** end to end on a 60 s track, or **+16.8%** together with the
+  overlap-add change below, measured on an idle M4 against a same-config control
+  (noise floor 1.04%). It is faster on the first call too — 0.671 s against
+  0.776 s on a 20 s clip with no warmup — so there is no cold-start cost.
+  Compilation reassociates floating-point adds, so output is 107–115 dB SNR from
+  the eager path, verified on `htdemucs`, `htdemucs_6s` and `hdemucs_mmi`.
+  `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` restores the eager forward.
+- `scripts/perf/ab_harness.py`, an A/B harness that runs one process per arm,
+  rotates the arm order, and computes a noise floor from same-config control
+  arms. On an idle machine it resolves to 0.04%.
+
+### Changed
+
+- **Demucs overlap-add evaluates after every update rather than every 8.**
+  **+4.3%** end to end on a 60 s track, output bit-identical. Sweeping the
+  interval on an idle M4 against a same-config control (noise floor 0.62%):
+  1 → +4.3%, 2 → +3.5%, 4 → +1.7%, 16 → +1.0%.
+- **Roformer/MDXC precision now defaults to fp32.** bf16 measures no faster on
+  current hardware — dead on a same-config control at a 0.04% noise floor — and
+  costs ~78 dB SNR, so fp32 is the better default. `--precision bf16` and
+  `MLX_ENABLE_AMP=1` remain available.
+- Release workflows set the version from the workflow input before building,
+  wait up to 10 minutes for a new file to reach every CDN mirror, and retry the
+  install.
+
+### Fixed
+
+- **Fused GroupNorm Metal kernels: added a missing threadgroup barrier.** The
+  three-pass reduction shares one `shared_sums` array, and pass 2 could overwrite
+  the group mean before every simdgroup had read it. With the barrier, relative
+  error at real htdemucs shapes drops from 1.6e-02 to **2.0e-07**, output becomes
+  run-to-run deterministic, and end-to-end SNR against the unfused path is
+  **118.2 dB**. The kernels stay opt-in via
+  `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all`, since the unfused path is the
+  same speed. New tests cover parity and determinism at the real shapes.
+- Loading a Demucs cache written by a different MLX version no longer suggests
+  reconverting. One cache produces bit-identical stems under 0.31.2 and 0.32.2,
+  and the strict loader already rejects a genuinely incompatible cache.
+
 ## 0.1.8 - 2026-09-22
 
 ### Fixed
 
-- **The fused GroupNorm Metal kernels had a missing threadgroup barrier.** The
-  three-pass reduction shares one `shared_sums` array: pass 1 ends with every
-  simdgroup reading slot 0 as the mean, and pass 2 has simdgroup 0 write that
-  same slot with nothing between. A fast simdgroup could clobber the mean before
-  a lagging one had loaded it, poisoning a whole (batch, group) slab. The window
-  is widest when pass 2's loop is *short* — small `elems_per_group`, which is
-  exactly the frequency-branch DConv shapes, not the large ones anyone would
-  have suspected. Measured at the real htdemucs shapes:
-
-  | | before | after |
-  |---|---|---|
-  | relative error | 1.6e-02 | **2.0e-07** |
-  | run-to-run | varies | **identical** |
-  | end-to-end SNR | ~20 dB | **118.2 dB** |
-
-  The kernels stay opt-in, but the reason changes: they are now correct and
-  simply not faster (1.7331 s against a 1.7270 s control at a 1.76% noise floor
-  on an idle M4). The previous "costs ~20 dB" justification no longer applies.
-
-  The only existing fused-vs-unfused test fed a **constant** input, which makes
-  the reduction order-independent by construction, so it could not have caught
-  this. The new test uses random data at the real shapes and checks run-to-run
-  determinism; it fails six ways against the old kernel.
-
-  Also corrects a comment claiming `metal::precise::erf()` exists. It does not —
-  `metal::erf`, bare `erf` and `metal::precise::erf` all fail to compile, with or
-  without `<metal_math>`, and there is no `erf` in the Metal SDK headers. The
-  Abramowitz & Stegun polynomial is required, not a shortcut, and its ~1.5e-7 is
-  irrelevant beside what the barrier fixed.
-
-
-- Demucs models produced near-silent stems on 0.1.7 (issue #4). The safetensors cache
-  introduced in 0.1.7 was written from `tree_flatten(model.state_dict())` (MLX attribute
-  names) but read back through the PyTorch-style key walker used by the conversion path,
-  which collapses the `conv`/`layers` wrapper segments. 360 of 573 tensors never matched
-  and were left at their random initialization, with no error and no warning, so every
-  Demucs model emitted noise-floor output. Cache loading now validates keys and shapes
-  against the constructed model and fails loudly on any mismatch.
-  **Existing caches do not need to be regenerated** — only the reader was wrong.
-- `--sample_rate` no longer truncates Demucs output. Demucs runs at its trained 44100 Hz
-  rate, but the stems were written with the requested rate in the header and no resample,
-  so `--sample_rate 48000` produced files 8.8% short. Stems are now resampled to the
-  requested rate before writing; the default 44100 path is unchanged and does no work.
-
 ### Changed
-
-- **Roformer/MDXC precision defaults to fp32; bf16 AMP is no longer forced on.**
-  It held the default on a "~15% faster, ~70 dB SNR" claim. Re-measured on a 30 s
-  clip, the precision half is right and the speed half is not:
-  - **On BS-Roformer the cast is real and costs 78.1 dB** SNR from fp32 (max abs
-    diff 4.4e-04), so the documented ~70 dB was honest.
-  - **It buys nothing.** On an idle M4 mini, a rotated one-process-per-arm run
-    with three identical fp32 control arms gave a **0.04%** noise floor (7.340 /
-    7.341 / 7.343 s). bf16 activations landed at **7.341 s — dead on the
-    control**. Casting the weights too, so the matmuls genuinely are half
-    precision, measured 7.366 s for both bf16 and fp16: **0.3% slower**.
-    "~15% faster" is not what happens. The same harness on a loaded dev Mac
-    reports a 6.5% floor and cannot answer this at all.
-  - **For mel-band models the switch is never read.** `create_mel_band_roformer_mlx`
-    set `MLX_ENABLE_AMP`, but `mel_band_roformer.py` contains no reference to it.
-    Output with AMP on is byte-identical to fp32 — max abs diff **0.00e+00**.
-  - **Mechanically it cannot be large**: the cast covers activations only and
-    leaves weights in fp32, and MLX promotes `bf16 @ fp32` back to fp32, so no
-    matmul runs in half precision. At 2048×2048 the cast makes the matmul
-    marginally *slower* than plain fp32 (1.605 ms against 1.560 ms); `bf16 @ bf16`
-    is 1.388 ms, the speed the claim was reaching for.
-
-  So fp32 by default: 78 dB is a real cost with no measured benefit against it.
-  `--precision bf16` and `MLX_ENABLE_AMP=1` still work.
-
-  If half precision is revisited, **use fp16 rather than bf16**: 73.4 dB against
-  59.2 dB on BS-Roformer (78.5 against 59.1 on mel-band) for identical matmul
-  cost — what three extra mantissa bits predicts (10 against 7). Post-norm
-  activations are O(1), so fp16's narrower exponent range is not an inference risk.
-
-- **The Demucs forward is now compiled.** `mx.compile` previously appeared on
-  this path only in `wiener_mlx.py`, which htdemucs never reaches, so a default
-  separation ran entirely uncompiled. **+15.9%** end to end on a 60 s track, or
-  **+16.8%** together with the overlap-add change below, measured on an idle M4
-  against a same-config control (noise floor 1.04%). It is faster on the first
-  call too — 0.671 s against 0.776 s on a 20 s clip with no warmup — so there is
-  no cold-start cost to weigh.
-  Fusion reassociates floating-point adds, so output is no longer bit-identical:
-  **107–115 dB SNR** against the eager path, verified on `htdemucs`,
-  `htdemucs_6s` and `hdemucs_mmi` (the last exercises the Wiener EM path, where
-  `mx.compile` nests inside four already-compiled helpers). That is roughly
-  −76 dBFS of error. `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` restores the eager
-  forward.
-  Worth recording why this was the lever: ablation shows the path is *not*
-  arithmetic-bound — deleting the cross-transformer, ~75% of the FLOPs, saves
-  only 21% of wall clock, and bf16 on it saves nothing — so the win is in fused
-  dispatch rather than faster math.
-
-- **Demucs overlap-add evaluates after every update instead of every 8.** The
-  accumulator is the largest tensor in the job, and deferring its updates builds
-  a lazy graph whose working set grows with the interval. Strictly more
-  synchronization, measurably faster: **+4.3%** end to end on a 60 s track
-  through `htdemucs` (+3.5% on 30 s), with output bit-identical. The interval
-  was `max(8, batch_size * 2)`, a constant nobody had measured. Sweeping it on
-  an idle M4 against a same-config control (noise floor 0.62%): interval 1 gives
-  +4.3%, 2 gives +3.5%, 4 gives +1.7%, 16 gives +1.0%.
 
 - **Demucs defaults now match the parity configuration out of the box.** Fused
   GroupNorm/GLU Metal kernels are off by default. Measured on a 45 s clip through
