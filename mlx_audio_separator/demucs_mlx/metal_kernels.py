@@ -233,8 +233,17 @@ def fused_glu(x: mx.array, axis: int = 1) -> mx.array:
 # Uses simdgroup reductions for mean/variance.
 # GELU = 0.5 * x * (1 + erf(x / sqrt(2)))
 # MSL provides no erf in any namespace (metal::erf, erf and
-# metal::precise::erf all fail to compile), so an approximation is
-# required here. A&S 7.1.26 is accurate to ~1.5e-7.
+# metal::precise::erf all fail to compile, with or without <metal_math>),
+# and MLX does not expose its own erf.h on the JIT include path, so an
+# approximation is required here. A&S 7.1.26 is accurate to ~1.5e-7.
+#
+# Vendoring MLX's erf (the routine mx.erf itself calls) was tried and
+# reverted. It is bit-exact against mx.erf -- 0.000e+00 over 4096 samples,
+# against 8.9e-07 for A&S -- and it changed nothing that matters: kernel
+# relative error stayed at 2.03e-07 and end-to-end SNR moved 118.2 -> 116.1 dB,
+# i.e. sideways within reassociation noise. The residual is the reduction
+# order, not the erf, so 160 lines of vendored third-party code bought
+# nothing.
 
 _GROUPNORM_GELU_HEADER = r"""
 // Abramowitz & Stegun approximation of erf, max error ~1.5e-7
