@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.16 - 2026-09-23
+
+### Changed
+
+- The release smoke gate installs the published artifact by URL resolved from the
+  release API, instead of resolving the version through the package index. The two
+  content-negotiated renderings of `/simple/<project>/` can serve different
+  snapshots, so an index resolve could fail for a version that was published and
+  intact.
+- The publish step refuses to run when the version is already on the index unless
+  `allow_existing` is set, so a re-dispatch cannot skip the upload and still report
+  success.
+- Publishing to PyPI now requires a matching TestPyPI release, with `skip_rc_check`
+  to override.
+- A `Release (GitHub)` workflow creates the tag and release from the same dispatch
+  that verifies the version, instead of by hand.
+
+The published distribution is unchanged: this repository does not ship `.github/`
+in its sdist, so this release exists only to keep the tag level with `main`.
+
 ## 0.1.15 - 2026-09-23
 
 ### Added
