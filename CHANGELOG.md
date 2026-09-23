@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.14 - 2026-09-23
+
+### Fixed
+
+- `uv.lock` refreshed to the released stack (mlx-audio-io 1.3.14, mlx-spectro
+  0.9.4). It had pinned mlx-audio-io 1.3.12 and mlx-spectro 0.9.2, so a
+  `uv sync` checkout built against versions older than the ones the package
+  requires.
+
 ## 0.1.13 - 2026-09-23
 
 ### Changed
