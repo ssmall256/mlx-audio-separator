@@ -24,6 +24,11 @@ jobs:
       - name: Install packaging tools
         run: python -m pip install --upgrade pip build twine
 
+      - name: Set version from workflow input
+        run: |
+          sed -i "s/^version = .*/version = \"${{ github.event.inputs.version }}\"/" pyproject.toml
+          grep '^version' pyproject.toml
+
       - name: Build sdist and wheel
         run: python -m build
 
@@ -67,37 +72,38 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install from PyPI
+      - name: Wait for mlx-audio-separator on PyPI
         run: |
           python -m pip install --upgrade pip
-          for i in {1..12}; do
-            if wheel_url="$(python - <<'PY'
-          import json
-          import os
-          import time
-          import urllib.request
-
-          version = os.environ["PACKAGE_VERSION"]
-          url = (
-              "https://pypi.org/pypi/mlx-audio-separator/"
-              f"{version}/json?cache_bust={time.time_ns()}"
-          )
-          with urllib.request.urlopen(url) as response:
-              release = json.load(response)
-          wheels = [item["url"] for item in release["urls"] if item["packagetype"] == "bdist_wheel"]
-          if len(wheels) != 1:
-              raise RuntimeError(f"Expected one wheel for {version}, found {len(wheels)}")
-          print(wheels[0])
-          PY
-            )"; then
+          dist_dir="${RUNNER_TEMP}/mlx-audio-separator-dist"
+          mkdir -p "${dist_dir}"
+          # Up to 10 minutes: a freshly published file can take minutes to
+          # reach every CDN mirror, and macOS runners hit stale ones often.
+          for attempt in {1..60}; do
+            if python -m pip download \
+              --no-deps \
+              --no-cache-dir \
+              --only-binary :all: \
+              --dest "${dist_dir}" \
+              "mlx-audio-separator==${PACKAGE_VERSION}"; then
               break
             fi
-            if [ "$i" -eq 12 ]; then
+            if [ "${attempt}" -eq 60 ]; then
+              echo "mlx-audio-separator ${PACKAGE_VERSION} did not reach PyPI within 10 minutes" >&2
               exit 1
             fi
             sleep 10
           done
-          python -m pip install "$wheel_url"
+
+      - name: Install the downloaded distribution
+        run: |
+          shopt -s nullglob
+          dists=("${RUNNER_TEMP}/mlx-audio-separator-dist"/mlx_audio_separator-*)
+          if [ "${#dists[@]}" -ne 1 ]; then
+            echo "Expected exactly one mlx-audio-separator ${PACKAGE_VERSION} distribution, found ${#dists[@]}" >&2
+            exit 1
+          fi
+          python -m pip install --no-cache-dir "${dists[0]}"
 
       - name: Smoke test
         run: |
