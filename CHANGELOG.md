@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.17 - 2026-09-23
+
+### Added
+
+- `MLX_AUDIO_SEPARATOR_NO_LEGACY_CACHE=1` skips adopting models from the old
+  `/tmp/audio-separator-models/` default. That fallback reaches outside `$HOME`,
+  so a first-run check that only points `HOME` at an empty directory still
+  started with a warm model cache and could not prove first-run behaviour.
+  Unset, the fallback behaves exactly as before.
+
 ## 0.1.16 - 2026-09-23
 
 ### Changed

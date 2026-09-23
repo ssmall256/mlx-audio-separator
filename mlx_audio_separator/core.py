@@ -155,9 +155,22 @@ class Separator:
 
         # Adopt files already downloaded to the old default, but only when the
         # caller did not name a directory -- their choice wins.
+        #
+        # Set MLX_AUDIO_SEPARATOR_NO_LEGACY_CACHE=1 to skip the adoption
+        # entirely. The fallback reaches outside $HOME, so a release smoke test
+        # that only points HOME at an empty directory still starts with a warm
+        # model cache and cannot prove first-run behaviour.
+        legacy_disabled = os.environ.get(
+            "MLX_AUDIO_SEPARATOR_NO_LEGACY_CACHE", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if legacy_disabled:
+            self.logger.info(
+                "MLX_AUDIO_SEPARATOR_NO_LEGACY_CACHE is set; "
+                f"not reusing models from {LEGACY_MODEL_FILE_DIR}"
+            )
         self._legacy_model_file_dir = (
             LEGACY_MODEL_FILE_DIR
-            if (model_file_dir is None and not env_model_dir
+            if (not legacy_disabled and model_file_dir is None and not env_model_dir
                 and os.path.isdir(LEGACY_MODEL_FILE_DIR))
             else None
         )
