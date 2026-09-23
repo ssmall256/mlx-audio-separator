@@ -65,13 +65,50 @@ def test_one_graph_per_shape_not_per_call(monkeypatch):
     a, b = mx.ones((1, 2, 64)), mx.ones((2, 2, 64))
     for _ in range(4):
         mx.eval(apply_mlx._forward(model, a))
-    assert model.calls == 1, "same shape should trace once"
+    # One eager call, then one trace: four calls, two invocations of the model.
+    assert model.calls == 2, "same shape should trace once after the eager call"
     for _ in range(4):
         mx.eval(apply_mlx._forward(model, b))
-    assert model.calls == 2, "a second shape adds exactly one graph"
+    assert model.calls == 4, "a second shape adds one eager call and one graph"
 
     (_ref, per_shape), = apply_mlx._COMPILED_FORWARDS.values()
     assert len(per_shape) == 2
+
+
+def test_the_first_call_at_a_shape_runs_eagerly(monkeypatch):
+    """mlx-spectro tunes its STFT threadgroup sizes with timing runs, and MLX
+    forbids mx.eval inside a compile trace. Compiling the very first call would
+    leave a machine with no tuning cache no way to build one -- and before this,
+    that surfaced as `no usable threadgroup size ... Attempting to eval an array
+    during function transformations`, with no output produced at all.
+    """
+    monkeypatch.setenv(apply_mlx._DEMUCS_COMPILE_ENV, "1")
+    model = _Model()
+    x = mx.ones((1, 2, 64))
+
+    traced = []
+    real_compile = apply_mlx.mx.compile
+    monkeypatch.setattr(
+        apply_mlx.mx, "compile",
+        lambda fn, *a, **k: (traced.append(fn), real_compile(fn, *a, **k))[1],
+    )
+
+    mx.eval(apply_mlx._forward(model, x))
+    assert traced == [], "the first call must not be compiled"
+    assert model.calls == 1, "the first call must still produce its output"
+
+    mx.eval(apply_mlx._forward(model, x))
+    assert len(traced) == 1, "the second call compiles"
+
+
+def test_the_eager_first_call_returns_the_right_answer(monkeypatch):
+    """The warm-up call is not a throwaway -- its output is used."""
+    monkeypatch.setenv(apply_mlx._DEMUCS_COMPILE_ENV, "1")
+    x = mx.random.normal((2, 2, 128))
+    first = apply_mlx._forward(_Model(), x)
+    expected = x * 2.0 + 1.0
+    mx.eval(first, expected)
+    assert float(mx.max(mx.abs(first - expected))) == 0.0
 
 
 def test_a_second_model_gets_its_own_entry(monkeypatch):

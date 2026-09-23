@@ -117,7 +117,10 @@ def _forward(model: tp.Any, x: mx.array) -> mx.array:
     same-config control (noise floor 1.04%), htdemucs, 60 s of audio:
     **+15.9%**, or +16.8% together with the per-update overlap-add flush.
     Faster on the very first call too -- 0.671 s against 0.776 s on a 20 s clip
-    with no warmup -- so compilation repays itself inside one separation.
+    with no warmup -- so compilation repays itself inside one separation. The
+    first call at each shape still runs eagerly, because mlx-spectro cannot tune
+    its STFT threadgroup sizes inside a trace; that call's output is used, so
+    the only cost is one chunk going uncompiled.
 
     Fusion reassociates floating-point adds, so output is not bit-identical:
     107-114 dB SNR against the eager path across htdemucs, htdemucs_6s and
@@ -139,7 +142,17 @@ def _forward(model: tp.Any, x: mx.array) -> mx.array:
     per_shape = slot[1]
 
     key = (tuple(x.shape), str(x.dtype))
-    fn = per_shape.get(key)
+    if key not in per_shape:
+        # The first call at a shape runs eagerly, and the next one compiles.
+        # mlx-spectro picks its STFT/iSTFT threadgroup sizes by timing
+        # candidates, which needs mx.eval -- and MLX forbids mx.eval inside a
+        # compile trace. On a machine with no tuning cache yet, compiling the
+        # very first call therefore leaves it no way to tune. Running that call
+        # eagerly populates the cache at no cost, because its output is used.
+        per_shape[key] = None
+        return model(x)
+
+    fn = per_shape[key]
     if fn is None:
         fn = mx.compile(lambda t, _m=model: _m(t))
         per_shape[key] = fn

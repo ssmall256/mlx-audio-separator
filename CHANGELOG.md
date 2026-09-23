@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.10 - 2026-09-23
+
+### Fixed
+
+- **Demucs produced no output on a machine with no mlx-spectro tuning cache
+  yet.** 0.1.9 compiles the Demucs forward, and the STFT inside it picks its
+  Metal threadgroup size by timing candidates -- which needs `mx.eval`, and MLX
+  forbids `mx.eval` inside a compile trace. On a first run the separation ended
+  with `no usable threadgroup size for n_fft=4096, hop=1024` and wrote no stems;
+  once any uncompiled call had populated the cache, the same command worked, so
+  it did not reproduce on a machine that had already run one. The first call at
+  each input shape now runs eagerly and the next one compiles. Its output is
+  used, so the warm-up costs nothing, and compiled output still tracks the eager
+  path at 120-138 dB SNR across `htdemucs`, `htdemucs_6s` and `hdemucs_mmi`.
+  Requires mlx-spectro 0.9.2, which also stops tuning from raising under a
+  trace.
+
 ## 0.1.9 - 2026-09-23
 
 ### Added
