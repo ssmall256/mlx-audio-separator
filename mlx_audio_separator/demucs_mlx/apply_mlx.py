@@ -205,7 +205,16 @@ def apply_model(
         # --- BATCHING STATE ---
         batch_inputs = []
         batch_indices = []
-        eval_flush_interval = max(8, int(batch_size) * 2)
+        # Evaluate after every overlap-add update rather than letting a
+        # batch-sized run of them accumulate. Counterintuitive -- this is
+        # strictly more synchronization -- but the accumulator is the largest
+        # tensor in the job and deferring its updates builds a lazy graph whose
+        # working set grows with the interval. Measured on an idle M4 through
+        # the ABBA harness with a same-config control (noise floor 0.62%),
+        # htdemucs, 60 s of audio, against the previous value of 8:
+        #     interval 1 -> +4.3%   2 -> +3.5%   4 -> +1.7%   16 -> +1.0%
+        # Output is bit-identical at every interval.
+        eval_flush_interval = 1
         pending_updates = 0
         if hasattr(model, "valid_length"):
             std_valid_len = model.valid_length(segment_length)

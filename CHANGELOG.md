@@ -21,6 +21,15 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Demucs overlap-add evaluates after every update instead of every 8.** The
+  accumulator is the largest tensor in the job, and deferring its updates builds
+  a lazy graph whose working set grows with the interval. Strictly more
+  synchronization, measurably faster: **+4.3%** end to end on a 60 s track
+  through `htdemucs` (+3.5% on 30 s), with output bit-identical. The interval
+  was `max(8, batch_size * 2)`, a constant nobody had measured. Sweeping it on
+  an idle M4 against a same-config control (noise floor 0.62%): interval 1 gives
+  +4.3%, 2 gives +3.5%, 4 gives +1.7%, 16 gives +1.0%.
+
 - **Demucs defaults now match the parity configuration out of the box.** Fused
   GroupNorm/GLU Metal kernels are off by default. Measured on a 45 s clip through
   `htdemucs`, enabling them costs ~20 dB SNR against the unfused path (19.7 dB on drums,
