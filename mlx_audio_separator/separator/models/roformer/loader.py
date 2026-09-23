@@ -47,28 +47,38 @@ def detect_model_type(model_path: str, config: Dict[str, Any]) -> str:
 # Why MLX_ENABLE_AMP is no longer enabled by default.
 #
 # It was set here for both Roformer families and documented as "~15% faster,
-# ~70 dB SNR". Measured on a 30 s clip through mel_band_roformer_karaoke_gabox,
-# every part of that turned out to be wrong:
+# ~70 dB SNR". The precision half of that is about right for BS-Roformer. The
+# speed half is not supported, and for mel-band models the whole thing is inert.
 #
-#   * For mel-band models it does nothing at all. This function set the
-#     variable; `mel_band_roformer.py` never reads it. Output with AMP on is
-#     byte-identical to fp32 (max abs diff 0.00e+00), which is the proof.
-#   * Where it *is* read (`bs_roformer.py`), it casts activations only and
-#     leaves the weights in float32. MLX promotes bf16 @ fp32 back to float32,
-#     so no matmul ever runs in half precision. At 2048x2048 the cast makes the
-#     matmul marginally slower than plain fp32 (1.605 ms against 1.560 ms).
-#   * Casting the weights too, so the matmuls really are half precision, is
-#     slower end to end -- not faster. Median of two runs, and the ranking is
-#     identical with the arm order reversed, so it is not a position artifact:
+#   * For mel-band models the switch is never read. This function set the
+#     variable; `mel_band_roformer.py` contains no reference to it. Output with
+#     AMP on is byte-identical to fp32 (max abs diff 0.00e+00), which is the
+#     proof rather than an argument.
+#   * On BS-Roformer, where `bs_roformer.py` does read it, the cast is real:
+#     78.1 dB SNR from fp32 on a 30 s clip (max abs diff 4.4e-04). So the
+#     documented ~70 dB was honest.
+#   * But it buys no measurable time. Three identical fp32 arms in a rotated,
+#     one-process-per-arm run gave a 6.51% noise floor (10.664 / 10.275 /
+#     10.959 s); bf16 landed at 10.328 s, +1.8% against the pooled control --
+#     inside the floor, in the same direction as the controls' own scatter.
+#     Whatever the effect is, it is smaller than this harness can resolve, and
+#     "~15% faster" is not what was measured.
+#   * The mechanism says it cannot be large: the cast covers activations only
+#     and leaves the weights in float32, and MLX promotes bf16 @ fp32 back to
+#     float32. No matmul runs in half precision. At 2048x2048 the cast alone
+#     makes the matmul marginally slower than plain fp32 (1.605 ms against
+#     1.560 ms); bf16 @ bf16 is 1.388 ms, the speed the claim was reaching for
+#     and never got.
 #
-#         fp32 2.299 s | bf16 activations 2.602 s | bf16 full 2.804 s |
-#         fp16 full 3.848 s
+# So: fp32 by default, because 78 dB is a real cost and there is no measured
+# benefit to weigh against it.
 #
-# If half precision is ever revisited here, use float16 rather than bfloat16:
-# 10 mantissa bits against 7 measured 78.5 dB against 59.1 dB SNR from fp32 on
-# the same clip, a 19.4 dB improvement for identical matmul cost, which matches
-# what three extra mantissa bits predicts. The activations are post-norm and
-# O(1), so fp16's narrower exponent range is not a risk at inference.
+# If half precision is ever revisited, use float16 rather than bfloat16. On
+# BS-Roformer, casting weights and activations measured 73.4 dB (fp16) against
+# 59.2 dB (bf16) -- and on mel-band 78.5 against 59.1 -- for identical matmul
+# cost, which is what three extra mantissa bits predicts (10 against 7). The
+# activations are post-norm and O(1), so fp16's narrower exponent range is not
+# a risk at inference.
 #
 # `MLX_ENABLE_AMP=1` still works for anyone who wants to measure it.
 
