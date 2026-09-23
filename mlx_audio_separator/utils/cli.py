@@ -419,6 +419,23 @@ def main():
 
     separator.load_model(model_filename=args.model_filename)
     output_files = separator.separate(audio_files, custom_output_names=args.custom_output_names)
+
+    failures = getattr(separator, "failed_files", [])
+    if failures:
+        # A failed file used to be logged and then followed by "Separation
+        # complete!" and exit 0, so a wrapper script could not tell a total
+        # failure from a success.
+        for path, message in failures:
+            logger.error(f"Failed: {path}: {message}")
+        if output_files:
+            logger.error(
+                f"Separation finished with {len(failures)} failed file(s). "
+                f"Output file(s): {' '.join(output_files)}"
+            )
+        else:
+            logger.error(f"Separation failed for all {len(failures)} input file(s); no output written.")
+        sys.exit(1)
+
     logger.info(f"Separation complete! Output file(s): {' '.join(output_files)}")
 
 

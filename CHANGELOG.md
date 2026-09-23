@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.1.11 - 2026-09-23
+
+### Fixed
+
+- **The CLI exited 0 when every file failed.** `separate()` logs a file it
+  could not process and moves on, so one bad input does not abort a batch --
+  but the CLI then printed `Separation complete! Output file(s):` with an empty
+  list and exited 0 regardless, so a run that produced nothing looked like a
+  success to any script wrapping it. It now reports each failure and exits 1,
+  whether some files succeeded or none did. `Separator.failed_files` lists
+  `(path, message)` for the last `separate()` call, so library callers can make
+  the same distinction.
+
 ## 0.1.10 - 2026-09-23
 
 ### Fixed

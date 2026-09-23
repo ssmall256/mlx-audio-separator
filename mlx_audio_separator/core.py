@@ -188,6 +188,8 @@ class Separator:
         self.performance_params_explicit_keys = explicit_performance_keys(performance_params)
         self.performance_params = normalize_performance_params(performance_params)
         self._strict_separation_errors = False
+        # (path, message) for every file that failed the last separate() call.
+        self.failed_files: list[tuple[str, str]] = []
         self.save_converted_safetensors = bool(save_converted_safetensors)
 
         if demucs_params is None:
@@ -853,7 +855,13 @@ class Separator:
         self.logger.info(f'Load model duration: {time.strftime("%H:%M:%S", time.gmtime(int(time.perf_counter() - load_model_start_time)))}')
 
     def separate(self, audio_file_path, custom_output_names=None):
-        """Separate audio file(s) into stems."""
+        """Separate audio file(s) into stems.
+
+        Returns the stem paths that were written. A file that fails is logged
+        and skipped rather than aborting the batch, so the return value alone
+        cannot distinguish "nothing to do" from "everything failed" -- check
+        `failed_files`, which lists `(path, message)` for this call.
+        """
         if self.model_instance is None:
             raise ValueError("No model loaded. Please call load_model() before attempting to separate.")
 
@@ -861,6 +869,7 @@ class Separator:
             audio_file_path = [audio_file_path]
 
         output_files = []
+        self.failed_files = []
 
         for path in audio_file_path:
             if os.path.isdir(path):
@@ -874,6 +883,7 @@ class Separator:
                                 output_files.extend(files_output)
                             except Exception as e:
                                 self.logger.error(f"Failed to process file {full_path}: {e}")
+                                self.failed_files.append((full_path, str(e)))
                                 self._clear_cache_now()
                                 if self._strict_separation_errors:
                                     raise
@@ -884,6 +894,7 @@ class Separator:
                     output_files.extend(files_output)
                 except Exception as e:
                     self.logger.error(f"Failed to process file {path}: {e}")
+                    self.failed_files.append((path, str(e)))
                     self._clear_cache_now()
                     if self._strict_separation_errors:
                         raise
