@@ -13,6 +13,8 @@ record.
 
 | Setting | Default | Why |
 |---|---|---|
+| Demucs compiled forward | **on** | `mx.compile` on the model forward: +15.9% end to end, +16.8% with the flush below. Faster on the first call too, so no cold-start cost. Output 107-115 dB SNR from eager (fusion reassociates adds), verified on htdemucs, htdemucs_6s and hdemucs_mmi. `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` disables. |
+| Demucs overlap-add flush | **every update** | Was every 8. +4.3% on 60 s, output bit-identical. Sweep: 1 -> +4.3%, 2 -> +3.5%, 4 -> +1.7%, 16 -> +1.0%. |
 | Demucs fused GroupNorm/GLU kernels | **off** | Cost ~20 dB SNR vs the unfused path (19.7 dB on drums) and are not faster (0.783 s vs 0.776 s). Strictly worse on both axes. |
 | Demucs batch size | **2** | Fastest *and* smallest: 0.872 s / 4.75 GB vs 1.870 s / 9.20 GB at batch 8 on a 45 s clip. Batch 12 is ~10x slower. |
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
@@ -91,3 +93,16 @@ mlx-audio-separator input.wav --precision fp32
 defaults, those four together move the result by well under 1 dB -- the ~20 dB
 gap they used to close came entirely from the fused GroupNorm kernels, which
 are now off by default.
+
+## Measuring a change here
+
+Use `scripts/perf/ab_harness.py`. It runs one process per arm, rotates the arm
+order, and computes a noise floor from two same-config control arms; anything
+smaller than that floor has not been shown to do anything. On a loaded laptop it
+reports a ~40% floor and will happily show you five "wins" of 46-56%; on an idle
+M4 the same run gives 0.4-1.0%. If the floor comes back above a few percent the
+measurement is void — move machines rather than reading the table.
+
+Two Demucs "wins" of -16% and -20% in `roformer-kernel-fusion-followup.md` were
+discarded because a control arm moved. Re-measured with this harness, the -16%
+one (`DEMUCS_APPLY_CONCAT_BATCHING`) is +0.7%, inside the noise.

@@ -21,6 +21,24 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **The Demucs forward is now compiled.** `mx.compile` previously appeared on
+  this path only in `wiener_mlx.py`, which htdemucs never reaches, so a default
+  separation ran entirely uncompiled. **+15.9%** end to end on a 60 s track, or
+  **+16.8%** together with the overlap-add change below, measured on an idle M4
+  against a same-config control (noise floor 1.04%). It is faster on the first
+  call too — 0.671 s against 0.776 s on a 20 s clip with no warmup — so there is
+  no cold-start cost to weigh.
+  Fusion reassociates floating-point adds, so output is no longer bit-identical:
+  **107–115 dB SNR** against the eager path, verified on `htdemucs`,
+  `htdemucs_6s` and `hdemucs_mmi` (the last exercises the Wiener EM path, where
+  `mx.compile` nests inside four already-compiled helpers). That is roughly
+  −76 dBFS of error. `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` restores the eager
+  forward.
+  Worth recording why this was the lever: ablation shows the path is *not*
+  arithmetic-bound — deleting the cross-transformer, ~75% of the FLOPs, saves
+  only 21% of wall clock, and bf16 on it saves nothing — so the win is in fused
+  dispatch rather than faster math.
+
 - **Demucs overlap-add evaluates after every update instead of every 8.** The
   accumulator is the largest tensor in the job, and deferring its updates builds
   a lazy graph whose working set grows with the interval. Strictly more
