@@ -18,6 +18,15 @@ All notable changes to this project are documented in this file.
   path at 120-138 dB SNR across `htdemucs`, `htdemucs_6s` and `hdemucs_mmi`.
   Requires mlx-spectro 0.9.2, which also stops tuning from raising under a
   trace.
+- **An unreadable Demucs cache now regenerates instead of raising.**
+  `get_mlx_model` caught only `FileNotFoundError`, so a cache that existed but
+  failed validation raised `SafeCacheError` to the caller -- with nothing saying
+  that regenerating was the fix. Caches written before 0.1.8 lack fields the
+  hardened loader requires, and demucs-mlx writes a differently-shaped config
+  into the same `~/.cache/demucs-mlx` directory, so either upgrading or having
+  both packages installed could produce it. An unusable cache is now rebuilt,
+  which is also the right response to a digest mismatch. Errors that are not
+  about the cache still propagate.
 
 ## 0.1.9 - 2026-09-23
 
