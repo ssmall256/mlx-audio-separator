@@ -6,6 +6,37 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- **The fused GroupNorm Metal kernels had a missing threadgroup barrier.** The
+  three-pass reduction shares one `shared_sums` array: pass 1 ends with every
+  simdgroup reading slot 0 as the mean, and pass 2 has simdgroup 0 write that
+  same slot with nothing between. A fast simdgroup could clobber the mean before
+  a lagging one had loaded it, poisoning a whole (batch, group) slab. The window
+  is widest when pass 2's loop is *short* — small `elems_per_group`, which is
+  exactly the frequency-branch DConv shapes, not the large ones anyone would
+  have suspected. Measured at the real htdemucs shapes:
+
+  | | before | after |
+  |---|---|---|
+  | relative error | 1.6e-02 | **2.0e-07** |
+  | run-to-run | varies | **identical** |
+  | end-to-end SNR | ~20 dB | **118.2 dB** |
+
+  The kernels stay opt-in, but the reason changes: they are now correct and
+  simply not faster (1.7331 s against a 1.7270 s control at a 1.76% noise floor
+  on an idle M4). The previous "costs ~20 dB" justification no longer applies.
+
+  The only existing fused-vs-unfused test fed a **constant** input, which makes
+  the reduction order-independent by construction, so it could not have caught
+  this. The new test uses random data at the real shapes and checks run-to-run
+  determinism; it fails six ways against the old kernel.
+
+  Also corrects a comment claiming `metal::precise::erf()` exists. It does not —
+  `metal::erf`, bare `erf` and `metal::precise::erf` all fail to compile, with or
+  without `<metal_math>`, and there is no `erf` in the Metal SDK headers. The
+  Abramowitz & Stegun polynomial is required, not a shortcut, and its ~1.5e-7 is
+  irrelevant beside what the barrier fixed.
+
+
 - Demucs models produced near-silent stems on 0.1.7 (issue #4). The safetensors cache
   introduced in 0.1.7 was written from `tree_flatten(model.state_dict())` (MLX attribute
   names) but read back through the PyTorch-style key walker used by the conversion path,

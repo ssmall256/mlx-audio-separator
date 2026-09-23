@@ -45,28 +45,26 @@ def _fused_groupnorm_mode() -> str:
 
     Defaults to `off`.
 
-    These kernels were on by default until they were measured. On a 45 s clip
-    through htdemucs, enabling them costs ~20 dB SNR against the unfused path
-    (19.7 dB on drums, 23.7 dB on other) -- audible, not float noise. They are
-    also not faster: median 0.783 s fused vs 0.776 s unfused over five timed
-    runs. Strictly worse on both axes, so they are opt-in now.
+    These kernels had a one-line bug, not a design problem. The three-pass
+    reduction shares one `shared_sums` array: pass 1 ends with every simdgroup
+    reading slot 0 as the mean, and pass 2 has simdgroup 0 write that same slot
+    with no barrier between. A fast simdgroup could clobber the mean before a
+    lagging one had loaded it, poisoning a whole (batch, group) slab. The window
+    is widest when pass 2's loop is *short*, i.e. at small `elems_per_group` --
+    which is exactly the frequency-branch DConv shapes, not the large ones.
 
-    Two things contribute, in very different proportions:
+    With the barrier added, at the real htdemucs shapes:
 
-    * The reduction reuses `shared_sums[0]` across passes. Every simdgroup
-      reads it as the mean, then simdgroup 0 overwrites it with its pass-2
-      partial before any barrier, so a lagging simdgroup can read a corrupted
-      mean and poison a whole (batch, group) slab. That is shape- and
-      occupancy-dependent, and it is large enough to explain the SNR.
-    * The GELU uses an Abramowitz & Stegun erf polynomial where the unfused
-      path calls `mx.erf`. That is a real and unnecessary parity gap, but at
-      ~1e-7 it is about six orders of magnitude too small to account for 20 dB.
+        relative error   1.6e-02  ->  2.0e-07   (the erf polynomial's floor)
+        run-to-run       varies   ->  identical
+        end-to-end SNR   ~20 dB   ->  118.2 dB  (115.4 drums, 121.4 bass)
 
-    Note this module has no size threshold, unlike demucs-mlx, which routes
-    groups above 32768 elements to a pure-MLX fallback. Here every call runs
-    the kernel, including single-threadgroup reductions over ~500k elements --
-    which is the opposite of "it mostly falls back anyway", and the reason the
-    default matters more here.
+    They remain opt-in, but for a different reason than before: they are now
+    correct and simply not faster. On an idle M4 mini, 60 s through htdemucs,
+    rotated arms with three same-config controls (noise floor 1.76%), fused
+    measured 1.7331 s against a 1.7270 s control -- indistinguishable.
+
+    `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` enables them.
     """
     raw_env = os.getenv("MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE")
     if raw_env is None or raw_env.strip() == "":
@@ -234,7 +232,9 @@ def fused_glu(x: mx.array, axis: int = 1) -> mx.array:
 # Each threadgroup handles one (batch, group) pair.
 # Uses simdgroup reductions for mean/variance.
 # GELU = 0.5 * x * (1 + erf(x / sqrt(2)))
-# Metal provides metal::precise::erf() for exact erf.
+# MSL provides no erf in any namespace (metal::erf, erf and
+# metal::precise::erf all fail to compile), so an approximation is
+# required here. A&S 7.1.26 is accurate to ~1.5e-7.
 
 _GROUPNORM_GELU_HEADER = r"""
 // Abramowitz & Stegun approximation of erf, max error ~1.5e-7
@@ -296,6 +296,11 @@ if (wid == 0) {
 }
 threadgroup_barrier(mem_flags::mem_threadgroup);
 float mean = shared_sums[0] / (float)elems_per_group;
+// Every simdgroup reads slot 0 above, and pass 2 below has simdgroup 0 write
+// that same slot. Without this barrier a fast simdgroup can clobber the mean
+// before a lagging one has loaded it, poisoning the whole (batch, group) slab.
+// Shape- and occupancy-dependent, which is what made it look like drift.
+threadgroup_barrier(mem_flags::mem_threadgroup);
 
 // Pass 2: Compute variance
 float local_var = 0.0f;
@@ -322,8 +327,9 @@ for (uint i = tid; i < elems_per_group; i += tg_size) {
     uint c_global = group_idx * channels_per_group + c_local;
     float val = ((float)x[base + i] - mean) * inv_std;
     val = val * (float)weight[c_global] + (float)bias[c_global];
-    // GELU via the A&S erf approximation above, NOT mx.erf: this differs
-    // from the unfused path by ~1e-7. See _fused_groupnorm_mode.
+    // GELU. MSL has no erf in any namespace, so the A&S polynomial above is
+    // required, not a shortcut -- it differs from the unfused path's mx.erf by
+    // ~1.5e-7, which is near float32 epsilon and far too small to matter here.
     val = 0.5f * val * (1.0f + erf_approx(val * rsqrt2));
     out[base + i] = (T)val;
 }
@@ -499,6 +505,11 @@ if (wid == 0) {
 }
 threadgroup_barrier(mem_flags::mem_threadgroup);
 float mean = shared_sums[0] / (float)elems_per_group;
+// Every simdgroup reads slot 0 above, and pass 2 below has simdgroup 0 write
+// that same slot. Without this barrier a fast simdgroup can clobber the mean
+// before a lagging one has loaded it, poisoning the whole (batch, group) slab.
+// Shape- and occupancy-dependent, which is what made it look like drift.
+threadgroup_barrier(mem_flags::mem_threadgroup);
 
 // Pass 2: Compute variance
 float local_var = 0.0f;

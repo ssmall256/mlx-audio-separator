@@ -15,7 +15,7 @@ record.
 |---|---|---|
 | Demucs compiled forward | **on** | `mx.compile` on the model forward: +15.9% end to end, +16.8% with the flush below. Faster on the first call too, so no cold-start cost. Output 107-115 dB SNR from eager (fusion reassociates adds), verified on htdemucs, htdemucs_6s and hdemucs_mmi. `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` disables. |
 | Demucs overlap-add flush | **every update** | Was every 8. +4.3% on 60 s, output bit-identical. Sweep: 1 -> +4.3%, 2 -> +3.5%, 4 -> +1.7%, 16 -> +1.0%. |
-| Demucs fused GroupNorm/GLU kernels | **off** | Cost ~20 dB SNR vs the unfused path (19.7 dB on drums) and are not faster (0.783 s vs 0.776 s). Strictly worse on both axes. |
+| Demucs fused GroupNorm/GLU kernels | **off** | Had a missing threadgroup barrier: the mean in `shared_sums[0]` could be clobbered by pass 2 before every simdgroup had read it, worst at small `elems_per_group` — the freq-branch DConv shapes. Fixed, which took end-to-end SNR from ~20 dB to **118.2 dB** and relative error from 1.6e-02 to 2.0e-07. Still off, now only because they are not *faster*: 1.7331 s against a 1.7270 s control at a 1.76% noise floor. |
 | Demucs batch size | **2** | Fastest *and* smallest: 0.872 s / 4.75 GB vs 1.870 s / 9.20 GB at batch 8 on a 45 s clip. Batch 12 is ~10x slower. |
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
