@@ -44,10 +44,39 @@ def detect_model_type(model_path: str, config: Dict[str, Any]) -> str:
     raise ValueError(f"Cannot determine Roformer model type from path: {model_path}")
 
 
+# Why MLX_ENABLE_AMP is no longer enabled by default.
+#
+# It was set here for both Roformer families and documented as "~15% faster,
+# ~70 dB SNR". Measured on a 30 s clip through mel_band_roformer_karaoke_gabox,
+# every part of that turned out to be wrong:
+#
+#   * For mel-band models it does nothing at all. This function set the
+#     variable; `mel_band_roformer.py` never reads it. Output with AMP on is
+#     byte-identical to fp32 (max abs diff 0.00e+00), which is the proof.
+#   * Where it *is* read (`bs_roformer.py`), it casts activations only and
+#     leaves the weights in float32. MLX promotes bf16 @ fp32 back to float32,
+#     so no matmul ever runs in half precision. At 2048x2048 the cast makes the
+#     matmul marginally slower than plain fp32 (1.605 ms against 1.560 ms).
+#   * Casting the weights too, so the matmuls really are half precision, is
+#     slower end to end -- not faster. Median of two runs, and the ranking is
+#     identical with the arm order reversed, so it is not a position artifact:
+#
+#         fp32 2.299 s | bf16 activations 2.602 s | bf16 full 2.804 s |
+#         fp16 full 3.848 s
+#
+# If half precision is ever revisited here, use float16 rather than bfloat16:
+# 10 mantissa bits against 7 measured 78.5 dB against 59.1 dB SNR from fp32 on
+# the same clip, a 19.4 dB improvement for identical matmul cost, which matches
+# what three extra mantissa bits predicts. The activations are post-norm and
+# O(1), so fp16's narrower exponent range is not a risk at inference.
+#
+# `MLX_ENABLE_AMP=1` still works for anyone who wants to measure it.
+
+
 def create_bs_roformer_mlx(config: Dict[str, Any]) -> BSRoformerMLX:
     """Create BS-Roformer MLX model from config."""
     os.environ.setdefault("MLX_USE_FAST_SDP", "1")
-    os.environ.setdefault("MLX_ENABLE_AMP", "1")
+    # MLX_ENABLE_AMP is deliberately not forced on; see the note above.
     os.environ.setdefault("MLX_ENABLE_COMPILE", "1")
 
     model_cfg = config.get("model", config)
@@ -80,7 +109,7 @@ def create_bs_roformer_mlx(config: Dict[str, Any]) -> BSRoformerMLX:
 def create_mel_band_roformer_mlx(config: Dict[str, Any]) -> MelBandRoformerMLX:
     """Create MelBand-Roformer MLX model from config."""
     os.environ.setdefault("MLX_USE_FAST_SDP", "1")
-    os.environ.setdefault("MLX_ENABLE_AMP", "1")
+    # MLX_ENABLE_AMP is deliberately not forced on; see the note above.
     os.environ.setdefault("MLX_ENABLE_COMPILE", "1")
 
     model_cfg = config.get("model", config)

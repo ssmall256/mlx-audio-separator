@@ -20,7 +20,7 @@ record.
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
 | VR batch size | **2** | Batch 1 is never fastest: 2.975 s vs 3.488 s on a 45 s clip, 16.364 s vs 17.946 s on a 195 s one. Batch 4 edges it on long inputs but costs another 2.5 GB. |
-| Roformer/MDXC precision | **bf16** | ~15% faster, and ~70 dB SNR from fp32 (max abs diff 6.1e-05, about the 16-bit LSB) -- inaudible. `--precision fp32` for exact parity work. |
+| Roformer/MDXC precision | **fp32** | bf16 was the default and was documented as ~15% faster at ~70 dB SNR. Re-measured, none of that held: for mel-band models the switch was never read (output byte-identical to fp32), and where it is read it casts activations only, which MLX promotes back to fp32 -- so no matmul ran in half precision. Casting weights too is *slower* end to end (bf16 2.804 s, fp16 3.848 s against fp32 2.299 s on a 30 s clip; same ranking with the order reversed). `--precision bf16` still available. |
 | Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
 | Stem writer threads | **2** | Same measurement: overlaps encoding with inference. |
 | Overlap-add accumulation | `mx.slice_update` | Correct on every supported MLX version. MLX before 0.32.0 corrupts strided slice scatter-add. |
@@ -67,7 +67,7 @@ results; they exist for benchmarking, parity investigations and debugging.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `MLX_ENABLE_AMP` | `1` | bf16 transformer stack. Prefer `--precision`. |
+| `MLX_ENABLE_AMP` | `0` | bf16 transformer stack. Off by default since it measured slower, and is a no-op for mel-band models entirely. If half precision is revisited, use fp16 rather than bf16: 78.5 dB against 59.1 dB SNR from fp32 for identical matmul cost. |
 | `MLX_USE_FAST_SDP` | `1` | `mx.fast.scaled_dot_product_attention`. |
 | `MLX_ENABLE_COMPILE` | `1` | `mx.compile` on the transformer subgraph. |
 

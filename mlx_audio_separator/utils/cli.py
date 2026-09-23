@@ -105,8 +105,8 @@ def main():
         choices=["auto", "bf16", "fp32"],
         help=(
             "Transformer precision for Roformer/MDXC models. 'auto' (the "
-            "default) uses bf16, which is ~15%% faster and differs from fp32 "
-            "by ~70 dB SNR -- inaudible. Use 'fp32' for exact parity work "
+            "default) uses fp32. 'bf16' is available but measured slower, not "
+            "faster, and is a no-op entirely for mel-band models "
             "(default: %(default)s)."
         ),
     )
@@ -259,11 +259,13 @@ def main():
     # Set MLX environment variables for performance
     os.environ.setdefault("MLX_USE_FAST_SDP", "1")
 
-    # Transformer precision for Roformer/MDXC models. bf16 is the default
-    # because it is measurably faster and the difference is inaudible: on
-    # BS-Roformer it costs ~70 dB SNR (max abs diff 6.1e-05, around the 16-bit
-    # LSB) while running ~15% quicker. fp32 is here for parity work, and for
-    # anyone who would rather not take the tradeoff at all.
+    # Transformer precision for Roformer/MDXC models. fp32 is the default: bf16
+    # held that spot on a "~15% faster, ~70 dB SNR" claim that did not survive
+    # re-measurement. For mel-band models the switch was never read at all, and
+    # where it is read it casts activations only -- MLX promotes bf16 @ fp32
+    # back to fp32, so no matmul ever ran in half precision. Casting the weights
+    # too, which does make them half precision, is slower end to end. Details
+    # and numbers in separator/models/roformer/loader.py.
     if args.precision != "auto":
         os.environ["MLX_ENABLE_AMP"] = "1" if args.precision == "bf16" else "0"
 

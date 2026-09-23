@@ -21,6 +21,27 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- **Roformer/MDXC precision defaults to fp32; bf16 AMP is no longer forced on.**
+  It held the default on a "~15% faster, ~70 dB SNR" claim, and re-measuring on a
+  30 s clip through `mel_band_roformer_karaoke_gabox` found none of it true:
+  - **For mel-band models the switch was never read.** `create_mel_band_roformer_mlx`
+    set `MLX_ENABLE_AMP`, but `mel_band_roformer.py` contains no reference to it.
+    Output with AMP on is byte-identical to fp32 — max abs diff **0.00e+00**.
+  - **Where it is read** (`bs_roformer.py`) it casts activations and leaves the
+    weights in fp32. MLX promotes `bf16 @ fp32` back to fp32, so no matmul ever
+    ran in half precision. At 2048×2048 the cast makes the matmul marginally
+    *slower* than plain fp32: 1.605 ms against 1.560 ms.
+  - **Casting the weights too is slower end to end**, not faster: fp32 2.299 s,
+    bf16 activations 2.602 s, bf16 full 2.804 s, fp16 full 3.848 s. The ranking
+    is identical with the arm order reversed, so it is not a position artifact.
+
+  `--precision bf16` and `MLX_ENABLE_AMP=1` still work for anyone who wants to
+  measure. If half precision is revisited, **use fp16 rather than bf16**: on the
+  same clip it measured **78.5 dB against 59.1 dB** SNR from fp32 for identical
+  matmul cost, a 19.4 dB improvement that is what three extra mantissa bits
+  predicts (10 against 7). The activations are post-norm and O(1), so fp16's
+  narrower exponent range is not a risk at inference.
+
 - **The Demucs forward is now compiled.** `mx.compile` previously appeared on
   this path only in `wiener_mlx.py`, which htdemucs never reaches, so a default
   separation ran entirely uncompiled. **+15.9%** end to end on a 60 s track, or
