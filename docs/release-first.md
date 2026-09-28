@@ -1,6 +1,7 @@
 # Release-First Playbook
 
-This playbook is the default release path: stabilize and ship reliability first, then iterate on speed behind explicit opt-in controls.
+This playbook has a scoped gate for a catalog addition that uses an existing
+architecture, and a full gate for architecture, runtime, or performance changes.
 It is intentionally more detailed than `README.md` and is meant for release engineering workflows.
 
 ## Goals
@@ -9,7 +10,46 @@ It is intentionally more detailed than `README.md` and is meant for release engi
 2. Require objective gates before publishing.
 3. Keep new performance work in opt-in mode until evidence is strong across machines.
 
-## Release Gate Inputs
+## Scoped Gate for a Catalog Addition
+
+Use this gate when the change adds a model through an existing architecture and
+does not claim a speedup or alter the default behavior of other models. Review
+the diff first: shared-path changes must have regression coverage. If the change
+modifies an architecture, changes performance defaults, or makes a benchmark
+claim, use the full gate below.
+
+1. Run the full test suite, Ruff, and `uv lock --check`. Submit tests through
+   `metalq submit -w` because the suite includes Metal work.
+2. Build the wheel and sdist, run `twine check`, and inspect the wheel for the
+   new loader, catalog entry, and expected dependencies.
+3. Verify the pinned model files once from a fresh download, including size and
+   config checks. Reuse cached weights for subsequent inference checks. For a
+   newly adapted model, retain a one-chunk output comparison against its
+   trusted reference from the implementation review.
+4. Run the real-weight smoke from the built wheel. It checks catalog selection,
+   a 13-second stereo input spanning three overlapping chunks, both full-length
+   stems, mixture reconstruction, a 48 kHz input, and single-stem selection:
+
+   ```bash
+   uv pip install --target /tmp/mlx-audio-separator-release-wheel --no-deps dist/mlx_audio_separator-*.whl
+   metalq submit -w -n catalog-release-smoke --no-env-sync -- \
+     python -I scripts/release/smoke_zfturbo_v1.py \
+     --wheel-target /tmp/mlx-audio-separator-release-wheel
+   ```
+
+   The weights must already be in the normal model cache. The script creates
+   and removes only small temporary audio files. Do not run it directly on Metal.
+5. After TestPyPI publishes the candidate, require its macOS install and
+   packaged-catalog smoke jobs to pass before publishing the stable version.
+
+This gate establishes correctness and package availability for the changed
+path. It does not establish catalog-wide performance or separation quality and
+must not be used to make those claims. Record the tested version, commit, and
+results in the release notes or release review.
+
+The scoped review for 0.1.18 is in [release-validation-0.1.18.md](release-validation-0.1.18.md).
+
+## Full Gate Inputs
 
 1. Full benchmark JSON from a clean run.
 2. Unit test pass in target environment.
@@ -107,7 +147,7 @@ uv run --with audio-separator --with onnxruntime python scripts/perf/mlx_vs_pas_
   --output-json /tmp/mlx_vs_pas_parity_smoke.json
 ```
 
-## Go / No-Go
+## Full Gate Go / No-Go
 
 Go only if all are true:
 
@@ -117,12 +157,15 @@ Go only if all are true:
 4. MLX vs PAS ABBA report provides the release comparison performance evidence.
 5. MLX vs PAS parity smoke (or report parity section) passes with documented tolerance policy.
 
-No-Go if any are false. Fix and re-run from benchmark stage.
+No-Go if any are false. Fix and re-run from benchmark stage. A catalog-only
+release may instead use the scoped gate above when its eligibility conditions
+and every scoped check pass.
 
 ## RC Then Stable
 
 1. Publish RC to TestPyPI using `.github/workflows/release-testpypi.yml`.
-2. Validate smoke install and a short benchmark sanity pass on a second Apple Silicon machine.
+2. Require the TestPyPI macOS install and packaged-catalog smoke jobs to pass.
+   For a full-gate release, also run the benchmark sanity pass on a second Apple Silicon machine.
 3. Publish stable to PyPI using `.github/workflows/release-pypi.yml`.
 4. Publish the GitHub tag and release using `.github/workflows/release-github.yml`.
    The version in `pyproject.toml` and the `CHANGELOG.md` heading must match the

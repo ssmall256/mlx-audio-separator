@@ -251,3 +251,12 @@ jobs:
           print(f'mlx-audio-separator {mlx_audio_separator.__version__} import smoke passed')
           " 2>&1 | head -20
           mlx-audio-separator --version
+          python - <<'PY'
+          import json
+          from importlib.resources import files
+
+          catalog = json.loads(files("mlx_audio_separator").joinpath("models.json").read_text())
+          entry = catalog["mlx_hf_roformer_download_list"]["ZFTurbo Mel-Band-RoFormer Vocals v1"]
+          assert entry["filename"] == "mel-roformer-zfturbo-vocals-v1-mlx"
+          print("Packaged ZFTurbo vocals v1 catalog entry passed")
+          PY
