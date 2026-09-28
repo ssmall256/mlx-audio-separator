@@ -124,3 +124,6 @@ No-Go if any are false. Fix and re-run from benchmark stage.
 1. Publish RC to TestPyPI using `.github/workflows/release-testpypi.yml`.
 2. Validate smoke install and a short benchmark sanity pass on a second Apple Silicon machine.
 3. Publish stable to PyPI using `.github/workflows/release-pypi.yml`.
+4. Publish the GitHub tag and release using `.github/workflows/release-github.yml`.
+   The version in `pyproject.toml` and the `CHANGELOG.md` heading must match the
+   version already published to PyPI.

@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.1.18 - 2026-09-28
+
 ### Added
 
 - ZFTurbo Mel-Band-RoFormer Vocals v1 is available through the standard model
