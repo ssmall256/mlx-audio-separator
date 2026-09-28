@@ -8,6 +8,7 @@ import mlx.core as mx
 import numpy as np
 from tqdm import tqdm
 
+from mlx_audio_separator.hf_mel_roformer import MODEL_SOURCE
 from mlx_audio_separator.separator.common_separator import CommonSeparator, match_array_shapes, normalize
 from mlx_audio_separator.separator.models.roformer.overlap_add_kernels import OverlapAddFusionCache
 from mlx_audio_separator.utils.performance import apply_experimental_env
@@ -112,6 +113,14 @@ class MDXCSeparator(CommonSeparator):
 
     def _load_model(self):
         """Load MDXC model (Roformer or MDX23C) using MLX."""
+        if self.model_data.get("backend") == MODEL_SOURCE:
+            from mlx_audio_separator.hf_mel_roformer import load_local_model
+
+            self.model_run = load_local_model(self.model_path, self.model_data)
+            self.model_type = "mel_band_roformer"
+            self.logger.info("Loaded ZFTurbo vocals v1 with the local MelBand-RoFormer model")
+            return
+
         from mlx_audio_separator.separator.models.mdxc.loader import load_mdxc_model
 
         # Controls L2Norm implementation in Roformer model construction.
@@ -372,7 +381,11 @@ class MDXCSeparator(CommonSeparator):
         # Auto-enable segment size override for short audio for this run only.
         effective_override_model_segment_size = bool(self.override_model_segment_size)
         audio_duration_seconds = mix.shape[1] / self.sample_rate
-        if audio_duration_seconds < 10.0 and not effective_override_model_segment_size:
+        if (
+            audio_duration_seconds < 10.0
+            and not effective_override_model_segment_size
+            and getattr(self, "model_data", {}).get("backend") != MODEL_SOURCE
+        ):
             effective_override_model_segment_size = True
             self.logger.warning(
                 f"Audio duration ({audio_duration_seconds:.2f}s) < 10s, "
@@ -586,25 +599,27 @@ class MDXCSeparator(CommonSeparator):
         else:
             effective_override_model_segment_size = bool(override_model_segment_size)
 
-        if effective_override_model_segment_size:
-            mdx_segment_size = self.segment_size
-        else:
-            mdx_segment_size = inference.get("dim_t", self.segment_size)
-
         num_stems = 1 if target_instrument else len(instruments)
         if num_stems <= 0:
             raise ValueError("Invalid model metadata: unable to determine output stems.")
 
         # Calculate chunk size
-        stft_hop_len = model_cfg.get("stft_hop_length", audio_cfg.get("hop_length", 512))
-        chunk_size = int(stft_hop_len) * (int(mdx_segment_size) - 1)
-        self.logger.debug(f"Chunk size: {chunk_size} (stft_hop={stft_hop_len}, dim_t={mdx_segment_size})")
+        if self.model_data.get("backend") == MODEL_SOURCE:
+            chunk_size = int(inference["chunk_size"])
+            step = chunk_size // int(inference["num_overlap"])
+        else:
+            if effective_override_model_segment_size:
+                mdx_segment_size = self.segment_size
+            else:
+                mdx_segment_size = inference.get("dim_t", self.segment_size)
+            stft_hop_len = model_cfg.get("stft_hop_length", audio_cfg.get("hop_length", 512))
+            chunk_size = int(stft_hop_len) * (int(mdx_segment_size) - 1)
+            self.logger.debug(f"Chunk size: {chunk_size} (stft_hop={stft_hop_len}, dim_t={mdx_segment_size})")
 
-        # Calculate step size
-        sample_rate = audio_cfg.get("sample_rate", self.sample_rate)
-        desired_step = int(self.overlap * sample_rate)
-        step = chunk_size if desired_step <= 0 else min(desired_step, chunk_size)
-        step = max(1, int(step))
+            sample_rate = audio_cfg.get("sample_rate", self.sample_rate)
+            desired_step = int(self.overlap * sample_rate)
+            step = chunk_size if desired_step <= 0 else min(desired_step, chunk_size)
+            step = max(1, int(step))
 
         # Create Hamming window (both MLX and NumPy for different accumulation paths)
         window_np = self._np_window_cache.get(chunk_size)
@@ -626,6 +641,8 @@ class MDXCSeparator(CommonSeparator):
 
             # Short audio: single chunk
             part = mx.expand_dims(mix_mx, axis=0)
+            if self.model_data.get("backend") == MODEL_SOURCE:
+                part = mx.pad(part, [(0, 0), (0, 0), (0, chunk_size - mix.shape[1])])
             x = model_run(part)
             if x.ndim == 3:
                 x = mx.expand_dims(x, axis=1)

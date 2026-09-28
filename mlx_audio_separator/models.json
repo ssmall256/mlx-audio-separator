@@ -14,6 +14,19 @@
             "MDX23C-DrumSep-aufr33-jarredou.ckpt": "config_drumsep_mdx23c.yaml"
         }
     },
+    "mlx_hf_roformer_download_list": {
+        "ZFTurbo Mel-Band-RoFormer Vocals v1": {
+            "filename": "mel-roformer-zfturbo-vocals-v1-mlx",
+            "source": "huggingface_mel_roformer",
+            "repo_id": "mlx-community/mel-roformer-zfturbo-vocals-v1-mlx",
+            "revision": "01bef2daebedf39937f552d6da68340fc979c9a0",
+            "source_checkpoint": "model_vocals_mel_band_roformer_sdr_8.42.ckpt",
+            "weight_size_bytes": 67402202,
+            "files": ["model.safetensors", "config.json"],
+            "stems": ["Vocals", "Instrumental"],
+            "target_stem": "Vocals"
+        }
+    },
     "roformer_download_list": {
         "Roformer Model: Mel-Roformer-Karaoke-Aufr33-Viperx": {
             "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt": "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956_config.yaml"

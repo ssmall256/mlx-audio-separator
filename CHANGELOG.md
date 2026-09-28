@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+
+- ZFTurbo Mel-Band-RoFormer Vocals v1 is available through the standard model
+  catalog as `mel-roformer-zfturbo-vocals-v1-mlx`. It downloads the published MLX
+  weights and config, uses the built-in RoFormer implementation to isolate vocals,
+  and derives an instrumental stem.
+
 ## 0.1.17 - 2026-09-23
 
 ### Added

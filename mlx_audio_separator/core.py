@@ -19,6 +19,7 @@ import requests
 import yaml
 from tqdm import tqdm
 
+import mlx_audio_separator.hf_mel_roformer as hf_mel_roformer
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_MODEL_FILE_DIR,
@@ -206,6 +207,7 @@ class Separator:
                 raise ValueError(f"The sample rate setting is {self.sample_rate}. Enter something less ambitious.")
         except ValueError:
             raise ValueError("The sample rate must be a non-zero whole number. Please provide a valid integer.")
+        self._requested_sample_rate = self.sample_rate
 
         self.chunk_duration = chunk_duration
         if chunk_duration is not None:
@@ -686,6 +688,13 @@ class Separator:
             },
         }
 
+        for name, entry in audio_separator_models_list.get("mlx_hf_roformer_download_list", {}).items():
+            model_files_grouped_by_type["MDXC"][name] = {
+                **entry,
+                "scores": {},
+                "download_files": [f"{entry['filename']}/{filename}" for filename in entry["files"]],
+            }
+
         return model_files_grouped_by_type
 
     def get_simplified_model_list(self, filter_sort_by=None):
@@ -775,10 +784,19 @@ class Separator:
                 self.model_is_uvr_vip = "VIP" in model_friendly_name
                 model_repo_url_prefix = vip_model_repo_url_prefix if self.model_is_uvr_vip else public_model_repo_url_prefix
 
-                if model_info["filename"] == model_filename or model_filename in model_info["download_files"]:
+                matches_filename = model_info["filename"] == model_filename
+                matches_download = (
+                    model_info.get("source") != hf_mel_roformer.MODEL_SOURCE
+                    and model_filename in model_info["download_files"]
+                )
+                if matches_filename or matches_download:
                     self.logger.debug(f"Found matching model: {model_friendly_name}")
                     self.model_friendly_name = model_friendly_name
                     self.print_uvr_vip_message()
+
+                    if model_info.get("source") == hf_mel_roformer.MODEL_SOURCE:
+                        model_path = str(hf_mel_roformer.download_model(model_info, self.model_file_dir))
+                        return model_filename, model_type, model_friendly_name, model_path, None
 
                     for file_to_download in model_info["download_files"]:
                         if file_to_download.startswith("http"):
@@ -811,6 +829,15 @@ class Separator:
                     return model_filename, model_type, model_friendly_name, model_path, yaml_config_filename
 
         raise ValueError(f"Model file {model_filename} not found in supported model files")
+
+    def _load_downloaded_model_data(self, model_path, yaml_config_filename):
+        if os.path.isdir(model_path):
+            return hf_mel_roformer.load_model_data(model_path)
+        if model_path.lower().endswith(".yaml"):
+            yaml_config_filename = model_path
+        if yaml_config_filename is not None:
+            return self.load_model_data_from_yaml(yaml_config_filename)
+        return self.load_model_data_using_hash(model_path)
 
     def load_model_data_from_yaml(self, yaml_config_filename):
         if not os.path.exists(yaml_config_filename):
@@ -876,13 +903,12 @@ class Separator:
         self.model_name = model_name
         self.logger.debug(f"Model downloaded, friendly name: {model_friendly_name}, model_path: {model_path}")
 
-        if model_path.lower().endswith(".yaml"):
-            yaml_config_filename = model_path
-
-        if yaml_config_filename is not None:
-            model_data = self.load_model_data_from_yaml(yaml_config_filename)
-        else:
-            model_data = self.load_model_data_using_hash(model_path)
+        model_data = self._load_downloaded_model_data(model_path, yaml_config_filename)
+        self.sample_rate = (
+            model_data["audio"]["sample_rate"]
+            if model_data.get("backend") == hf_mel_roformer.MODEL_SOURCE
+            else self._requested_sample_rate
+        )
 
         common_params = {
             "logger": self.logger,
@@ -1102,13 +1128,7 @@ class Separator:
         self.logger.info(f"Downloading model {model_filename}...")
         model_filename, model_type, model_friendly_name, model_path, yaml_config_filename = self.download_model_files(model_filename)
 
-        if model_path.lower().endswith(".yaml"):
-            yaml_config_filename = model_path
-
-        if yaml_config_filename is not None:
-            model_data = self.load_model_data_from_yaml(yaml_config_filename)
-        else:
-            model_data = self.load_model_data_using_hash(model_path)
+        model_data = self._load_downloaded_model_data(model_path, yaml_config_filename)
 
         self.logger.info(
             f"Model downloaded, type: {model_type}, friendly name: {model_friendly_name}, "

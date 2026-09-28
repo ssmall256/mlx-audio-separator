@@ -34,6 +34,9 @@ mlx-audio-separator song.mp3
 # Use a specific model
 mlx-audio-separator song.mp3 -m htdemucs_ft.yaml
 
+# Install and use ZFTurbo Mel-Band-RoFormer Vocals v1
+mlx-audio-separator song.mp3 -m mel-roformer-zfturbo-vocals-v1-mlx
+
 # List supported models
 mlx-audio-separator --list_models
 ```
@@ -56,6 +59,12 @@ print(outputs)
 - MDX
 - VR
 - Demucs
+
+ZFTurbo Vocals v1 downloads preconverted MLX weights from Hugging Face through
+the standard model catalog. It produces a vocal stem and derives the instrumental
+stem by subtracting vocals from the mixture. It runs on the built-in MelBand-RoFormer
+implementation. Its original checkpoint is
+`model_vocals_mel_band_roformer_sdr_8.42.ckpt`.
 
 ### Demucs cache security and migration
 
