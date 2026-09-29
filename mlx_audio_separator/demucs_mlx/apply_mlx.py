@@ -11,7 +11,7 @@ import weakref
 
 import mlx.core as mx
 
-from .defaults import DEFAULT_BATCH_SIZE
+from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from .mlx_utils import center_trim
 
 _WEIGHT_CACHE: dict[tuple[int, float, str], mx.array] = {}
@@ -35,6 +35,11 @@ def _deterministic_accumulation_enabled() -> bool:
     # Default to strict accumulation in deterministic-fused mode.
     fused = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED")
     return str(fused).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _prefer_per_update_eval(offset_count: int, batch_size: int) -> bool:
+    """Avoid a growing lazy overlap-add graph on measured default batches."""
+    return batch_size == DEFAULT_BATCH_SIZE and offset_count >= 9
 
 
 def _demucs_apply_concat_batching_enabled() -> bool:
@@ -115,7 +120,7 @@ def _forward(model: tp.Any, x: mx.array) -> mx.array:
 
     Measured on an idle M4 through `scripts/perf/ab_harness.py` with a
     same-config control (noise floor 1.04%), htdemucs, 60 s of audio:
-    **+15.9%**, or +16.8% together with the per-update overlap-add flush.
+    **+15.9%**, or +16.8% with the then-used per-batch overlap-add flush.
     Faster on the very first call too -- 0.671 s against 0.776 s on a 20 s clip
     with no warmup -- so compilation repays itself inside one separation. The
     first call at each shape still runs eagerly, because mlx-spectro cannot tune
@@ -162,7 +167,7 @@ def _forward(model: tp.Any, x: mx.array) -> mx.array:
 def apply_model(
     model,
     mix: tp.Union[mx.array, "TensorChunk"],
-    shifts: int = 1,
+    shifts: int = DEFAULT_DEMUCS_SHIFTS,
     split: bool = True,
     overlap: float = 0.25,
     transition_power: float = 1.0,
@@ -304,30 +309,18 @@ def apply_model(
         # --- BATCHING STATE ---
         batch_inputs = []
         batch_indices = []
-        # Evaluate after every overlap-add update rather than letting a
-        # batch-sized run of them accumulate. Counterintuitive -- this is
-        # strictly more synchronization -- but the accumulator is the largest
-        # tensor in the job and deferring its updates builds a lazy graph whose
-        # working set grows with the interval. Measured on an idle M4 through
-        # the ABBA harness with a same-config control (noise floor 0.62%),
-        # htdemucs, 60 s of audio, against the previous value of 8:
-        #     interval 1 -> +4.3%   2 -> +3.5%   4 -> +1.7%   16 -> +1.0%
-        # Output is bit-identical at every interval.
-        eval_flush_interval = 1
-        pending_updates = 0
+        # True per-update evaluation wins once there are enough overlapping
+        # segments to make the growing accumulator graph costly. Paired runs
+        # measured it slower at 30-45 s, faster at 50-60 s. With the default
+        # 7.8 s segment and 25% overlap, nine offsets begin near 50 seconds.
+        eval_per_update = deterministic_accum or _prefer_per_update_eval(len(offsets), batch_size)
         if hasattr(model, "valid_length"):
             std_valid_len = model.valid_length(segment_length)
         else:
             std_valid_len = segment_length
 
-        def maybe_eval(force=False):
-            nonlocal pending_updates
-            if force or pending_updates >= eval_flush_interval:
-                mx.eval(out, sum_weight)
-                pending_updates = 0
-
         def flush_batch():
-            nonlocal batch_inputs, batch_indices, out, sum_weight, pending_updates
+            nonlocal batch_inputs, batch_indices, out, sum_weight
             if not batch_inputs:
                 return
 
@@ -374,17 +367,16 @@ def apply_model(
                 else:
                     out = out.at[:, :, :, offset:end].add(update)
                     sum_weight = sum_weight.at[offset:end].add(weight)
-                pending_updates += 1
-                if deterministic_accum:
-                    # Preserve update order for deterministic equivalence runs.
-                    maybe_eval(force=True)
+                if eval_per_update:
+                    mx.eval(out, sum_weight)
 
                 if progress_bar is not None:
                     progress_bar.update(1)
 
             batch_inputs = []
             batch_indices = []
-            maybe_eval()
+            if not eval_per_update:
+                mx.eval(out, sum_weight)
 
         try:
             for i, offset in enumerate(offsets):
@@ -435,13 +427,11 @@ def apply_model(
                     else:
                         out = out.at[:, :, :, offset:end].add(update)
                         sum_weight = sum_weight.at[offset:end].add(weight_slice)
-                    pending_updates += 1
-                    maybe_eval(force=deterministic_accum)
+                    mx.eval(out, sum_weight)
                     if progress_bar is not None:
                         progress_bar.update(1)
 
             flush_batch()
-            maybe_eval(force=True)
         finally:
             if progress_bar is not None:
                 progress_bar.close()

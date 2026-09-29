@@ -6,7 +6,7 @@ import time
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE
+from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from mlx_audio_separator.separator.common_separator import CommonSeparator
 from mlx_audio_separator.utils.performance import apply_experimental_env
 
@@ -23,7 +23,7 @@ class DemucsSeparator(CommonSeparator):
 
         # Demucs-specific parameters
         self.segment_size = arch_config.get("segment_size", "Default")
-        self.shifts = arch_config.get("shifts", 2)
+        self.shifts = arch_config.get("shifts", DEFAULT_DEMUCS_SHIFTS)
         self.overlap = arch_config.get("overlap", 0.25)
         self.segments_enabled = arch_config.get("segments_enabled", True)
         self.batch_size = int(arch_config.get("batch_size", DEFAULT_BATCH_SIZE))

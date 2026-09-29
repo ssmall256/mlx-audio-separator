@@ -128,3 +128,20 @@ def test_apply_model_split_overlap_add_reconstructs_identity(overlap, batch_size
     target_np = np.array(target)
     assert np.max(np.abs(out_np - target_np)) <= 1e-4
     assert np.max(np.abs(out_np)) <= 0.91
+
+
+def test_apply_model_long_track_overlap_add_reconstructs_identity():
+    """The long-track per-update boundary preserves the full signal."""
+    sr = 44_100
+    length = sr * 60
+    t = mx.arange(length, dtype=mx.float32) / sr
+    mix = mx.stack([
+        0.6 * mx.sin(2.0 * np.pi * 220.0 * t),
+        0.3 * mx.sin(2.0 * np.pi * 440.0 * t),
+    ], axis=0).reshape(1, 2, length)
+    out = apply_mlx.apply_model(
+        _IdentityDemucsModel(), mix, shifts=0, split=True,
+        overlap=0.25, batch_size=2, segment=7.8,
+    )
+    mx.eval(out, mix)
+    np.testing.assert_allclose(np.array(out[:, 0]), np.array(mix), atol=1e-4, rtol=0)

@@ -25,6 +25,10 @@ from pathlib import Path
 #: commit 12f5881, "avoid memory thrashing on 16-36 GB Macs").
 DEFAULT_BATCH_SIZE = 2
 
+#: Match the upstream Demucs default. Extra shifts run the model again and
+#: can improve quality, but are an explicit inference-time tradeoff.
+DEFAULT_DEMUCS_SHIFTS = 1
+
 #: Seed for the shift-trick offsets. A fixed default makes repeated runs on the
 #: same input reproduce; pass an explicit seed, or ``None``, to vary per run.
 DEFAULT_SHIFT_SEED = 0

@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Demucs now defaults to one shift in the main CLI and wrapper, matching the
+  upstream Demucs default and the embedded API. Pass `--demucs_shifts 2` to
+  retain the previous two-pass setting.
+- Demucs overlap-add evaluates once per segment batch on shorter tracks and
+  after each segment update from nine offsets at the default batch size. The
+  crossover was measured at roughly 50 seconds, with identical stem output.
+- The embedded `demucs-mlx` CLI now uses two concurrent stem writers by default.
+
 ## 0.1.18 - 2026-09-28
 
 ### Added

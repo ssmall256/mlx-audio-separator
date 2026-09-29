@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from .defaults import DEFAULT_BATCH_SIZE
+from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from .mlx_registry import MLX_MODEL_REGISTRY
 
 
@@ -19,7 +19,7 @@ class _AsyncWriter:
     def __init__(
         self,
         maxsize: int = 4,
-        workers: int = 1,
+        workers: int = 2,
         *,
         clip: str = "rescale",
         bits_per_sample: int = 16,
@@ -229,10 +229,10 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
     parser.add_argument("-o", "--out", default="separated", help="Output directory")
     parser.add_argument("--segment", type=float, default=None, help="Segment length in seconds")
     parser.add_argument("--overlap", type=float, default=0.25, help="Overlap ratio")
-    parser.add_argument("--shifts", type=int, default=1, help="Number of random shifts")
+    parser.add_argument("--shifts", type=int, default=DEFAULT_DEMUCS_SHIFTS, help="Number of random shifts")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed for deterministic shift offsets")
     parser.add_argument("-b", "--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for inference")
-    parser.add_argument("--write-workers", type=int, default=1,
+    parser.add_argument("--write-workers", type=int, default=2,
                         help="Number of concurrent audio writer threads")
     parser.add_argument("--prefetch-tracks", type=int, default=2,
                         help="Number of prefetched decoded tracks")

@@ -9,6 +9,7 @@ import sys
 
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_DEMUCS_SHIFTS,
     DEFAULT_MODEL_FILE_DIR,
     DEFAULT_SHIFT_SEED,
     DEFAULT_VR_BATCH_SIZE,
@@ -206,7 +207,10 @@ def main():
 
     demucs_params = parser.add_argument_group("Demucs Architecture Parameters")
     demucs_params.add_argument("--demucs_segment_size", type=str, default="Default", help="Segment size (default: %(default)s).")
-    demucs_params.add_argument("--demucs_shifts", type=int, default=2, help="Number of random shifts (default: %(default)s).")
+    demucs_params.add_argument(
+        "--demucs_shifts", type=int, default=DEFAULT_DEMUCS_SHIFTS,
+        help="Number of random shifts (default: %(default)s).",
+    )
     demucs_params.add_argument(
         "--demucs_seed",
         type=_seed_arg,

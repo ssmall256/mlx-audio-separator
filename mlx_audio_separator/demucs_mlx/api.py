@@ -4,7 +4,7 @@ from __future__ import annotations
 import typing as tp
 from pathlib import Path
 
-from .defaults import DEFAULT_BATCH_SIZE
+from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from .mlx_registry import MLX_MODEL_REGISTRY
 
 
@@ -15,7 +15,7 @@ class Separator:
         self,
         model: str = "htdemucs",
         repo: tp.Optional[Path] = None,
-        shifts: int = 1,
+        shifts: int = DEFAULT_DEMUCS_SHIFTS,
         overlap: float = 0.25,
         split: bool = True,
         segment: tp.Optional[float] = None,

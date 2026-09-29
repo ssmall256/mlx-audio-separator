@@ -14,6 +14,7 @@ import pytest
 import mlx_audio_separator.demucs_mlx.metal_kernels as mk
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_DEMUCS_SHIFTS,
     DEFAULT_SHIFT_SEED,
     DEFAULT_VR_BATCH_SIZE,
 )
@@ -54,6 +55,23 @@ def test_demucs_batch_size_is_defined_in_exactly_one_place():
         inspect.signature(api.Separator.__init__).parameters["batch_size"].default
         == DEFAULT_BATCH_SIZE
     )
+
+
+def test_demucs_shifts_match_upstream_default():
+    import inspect
+
+    from mlx_audio_separator.demucs_mlx import api, apply_mlx
+
+    assert DEFAULT_DEMUCS_SHIFTS == 1
+    assert inspect.signature(apply_mlx.apply_model).parameters["shifts"].default == DEFAULT_DEMUCS_SHIFTS
+    assert inspect.signature(api.Separator.__init__).parameters["shifts"].default == DEFAULT_DEMUCS_SHIFTS
+
+
+def test_core_demucs_shift_default_matches_embedded_api(tmp_path):
+    from mlx_audio_separator.core import Separator
+
+    wrapper = Separator(info_only=True, model_file_dir=str(tmp_path / "models"))
+    assert wrapper.arch_specific_params["Demucs"]["shifts"] == DEFAULT_DEMUCS_SHIFTS
 
 
 def test_demucs_shifts_are_seeded_by_default():

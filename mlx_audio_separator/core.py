@@ -22,6 +22,7 @@ from tqdm import tqdm
 import mlx_audio_separator.hf_mel_roformer as hf_mel_roformer
 from mlx_audio_separator.demucs_mlx.defaults import (
     DEFAULT_BATCH_SIZE,
+    DEFAULT_DEMUCS_SHIFTS,
     DEFAULT_MODEL_FILE_DIR,
     DEFAULT_SHIFT_SEED,
     DEFAULT_VR_BATCH_SIZE,
@@ -59,11 +60,11 @@ class Separator:
 
     Demucs Architecture Specific Attributes & Defaults:
         segment_size: "Default"
-        shifts: 2
+        shifts: 1
         overlap: 0.25
         segments_enabled: True
-        batch_size: 8
-        seed: None
+        batch_size: 2
+        seed: 0
 
     MDXC Architecture Specific Attributes & Defaults:
         segment_size: 256
@@ -224,7 +225,7 @@ class Separator:
 
         if demucs_params is None:
             demucs_params = {
-                "segment_size": "Default", "shifts": 2, "overlap": 0.25, "segments_enabled": True,
+                "segment_size": "Default", "shifts": DEFAULT_DEMUCS_SHIFTS, "overlap": 0.25, "segments_enabled": True,
                 "batch_size": DEFAULT_BATCH_SIZE, "seed": DEFAULT_SHIFT_SEED,
             }
         if mdxc_params is None:
