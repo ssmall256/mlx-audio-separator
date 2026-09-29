@@ -10,6 +10,10 @@ import mlx.core as mx
 import mlx.nn as nn
 
 
+def _spatial_pair(value: int | tuple[int, int] | list[int]) -> tuple[int, int]:
+    return (value, value) if isinstance(value, int) else (value[0], value[1])
+
+
 class Lambda(nn.Module):
     def __init__(self, fn: tp.Callable[[mx.array], mx.array]):
         super().__init__()
@@ -97,11 +101,48 @@ class ConvTranspose1dNCL(nn.Module):
             output_padding=output_padding,
             bias=bias,
         )
+        self._phased_cache = None
 
     def __call__(self, x: mx.array) -> mx.array:
+        conv = self.conv
+        if (
+            conv.weight.shape[1] == 8
+            and conv.stride == 4
+            and conv.padding == 0
+            and conv.dilation == 1
+            and conv.output_padding == 0
+            and x.dtype == mx.float32
+            and conv.weight.dtype == mx.float32
+        ):
+            return self._phased_convolution(x)
         x = x.transpose(0, 2, 1)
-        y = self.conv(x)
+        y = conv(x)
         return y.transpose(0, 2, 1)
+
+    def _phased_convolution(self, x: mx.array) -> mx.array:
+        """Interleave four two-tap Conv1d outputs for stride-four deconvolution."""
+        conv = self.conv
+        source = conv.weight
+        cache = self._phased_cache
+        if cache is None or cache.source is not source:
+            phase_weights = [
+                mx.stack([source[:, phase + 4, :], source[:, phase, :]], axis=1)
+                for phase in range(4)
+            ]
+            weight = mx.concatenate(phase_weights, axis=0)
+            cache = _PhasedWeightCache(source, weight)
+            self._phased_cache = cache
+
+        batch, _, length = x.shape
+        nlc = x.transpose(0, 2, 1)
+        padded = mx.pad(nlc, [(0, 0), (1, 1), (0, 0)])
+        phases = mx.conv1d(padded, cache.weight)
+        out_channels = source.shape[0]
+        joined = phases.reshape(batch, length + 1, 4, out_channels)
+        joined = joined.reshape(batch, 4 * (length + 1), out_channels)
+        if "bias" in conv:
+            joined = joined + conv.bias
+        return joined.transpose(0, 2, 1)
 
 
 class Conv2dNCHW(nn.Module):
@@ -163,11 +204,86 @@ class ConvTranspose2dNCHW(nn.Module):
             output_padding=output_padding,
             bias=bias,
         )
+        self._phased_cache = None
 
     def __call__(self, x: mx.array) -> mx.array:
+        conv = self.conv
+        if (
+            conv.weight.shape[1:3] == (8, 1)
+            and _spatial_pair(conv.stride) == (4, 1)
+            and _spatial_pair(conv.padding) == (0, 0)
+            and _spatial_pair(conv.dilation) == (1, 1)
+            and _spatial_pair(conv.output_padding) == (0, 0)
+            and x.dtype == mx.float32
+            and conv.weight.dtype == mx.float32
+        ):
+            return self._phased_convolution(x)
         x = x.transpose(0, 2, 3, 1)
-        y = self.conv(x)
+        y = conv(x)
         return y.transpose(0, 3, 1, 2)
+
+    def _phased_convolution(self, x: mx.array) -> mx.array:
+        """Compute stride-four deconvolution as four two-tap output phases."""
+        conv = self.conv
+        source = conv.weight
+        cache = self._phased_cache
+        if cache is None or cache.source is not source:
+            phase_weights = [
+                mx.stack([source[:, phase + 4, 0, :], source[:, phase, 0, :]], axis=1)
+                for phase in range(4)
+            ]
+            weight = mx.concatenate(phase_weights, axis=0).reshape(
+                -1, 2, 1, source.shape[-1]
+            )
+            cache = _PhasedWeightCache(source, weight)
+            self._phased_cache = cache
+
+        batch, _, frequency, frames = x.shape
+        nhwc = x.transpose(0, 2, 3, 1)
+        padded = mx.pad(nhwc, [(0, 0), (1, 1), (0, 0), (0, 0)])
+        phases = mx.conv2d(padded, cache.weight)
+        out_channels = source.shape[0]
+        phased = phases.reshape(batch, frequency + 1, frames, 4, out_channels)
+        joined = phased.transpose(0, 1, 3, 2, 4).reshape(
+            batch, 4 * (frequency + 1), frames, out_channels
+        )
+        if "bias" in conv:
+            joined = joined + conv.bias
+        return joined.transpose(0, 3, 1, 2)
+
+
+class _PhasedWeightCache:
+    """Keep derived weights outside MLX Module's serializable parameter tree."""
+
+    def __init__(self, source: mx.array, weight: mx.array):
+        self.source = source
+        self.weight = weight
+
+
+def _use_fused_gn_glu() -> bool:
+    """Keep this package's existing fused-kernel opt-in and cache layout."""
+    from .metal_kernels import _fused_groupnorm_mode
+
+    return _fused_groupnorm_mode() != "off"
+
+
+def _group_norm_via_layer_norm(
+    x: mx.array,
+    num_groups: int,
+    eps: float,
+    weight: mx.array | None,
+    bias: mx.array | None,
+) -> mx.array:
+    """Normalize each channel group with MLX's fused last-axis kernel."""
+    batch, channels = x.shape[:2]
+    if channels % num_groups:
+        raise ValueError(f"num_channels {channels} not divisible by num_groups {num_groups}")
+    grouped = x.reshape(batch, num_groups, -1)
+    normalized = mx.fast.layer_norm(grouped, None, None, eps).reshape(x.shape)
+    if weight is None:
+        return normalized
+    affine_shape = (1, channels) + (1,) * (x.ndim - 2)
+    return normalized * weight.reshape(affine_shape) + bias.reshape(affine_shape)
 
 
 class GroupNormNCL(nn.Module):
@@ -190,34 +306,9 @@ class GroupNormNCL(nn.Module):
             self.bias = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        B, C = x.shape[0], x.shape[1]
-        G = self.num_groups
-        if C % G != 0:
-            raise ValueError(f"num_channels {C} not divisible by num_groups {G}")
-        
-        # Reshape (N, C, L) -> (N, G, C//G, L)
-        # We split the channel dim (1).
-        # Since memory is likely N-C-L, this is a metadata view.
-        x_reshaped = x.reshape(B, G, C // G, *x.shape[2:])
-        
-        # Calculate stats over (C//G, L).
-        # L is the last dim (contiguous), so this reduction is fast.
-        axes = tuple(range(2, x_reshaped.ndim))
-        mean = x_reshaped.mean(axis=axes, keepdims=True)
-        var = ((x_reshaped - mean) ** 2).mean(axis=axes, keepdims=True)
-        
-        # Normalize
-        x_norm = (x_reshaped - mean) * mx.rsqrt(var + self.eps)
-        
-        # Restore (N, C, L)
-        x_out = x_norm.reshape(x.shape)
-        
-        if self.affine:
-            # Broadcast weight/bias: (1, C, 1)
-            shape = [1, C] + [1] * (x_out.ndim - 2)
-            x_out = x_out * self.weight.reshape(shape) + self.bias.reshape(shape)
-            
-        return x_out
+        return _group_norm_via_layer_norm(
+            x, self.num_groups, self.eps, self.weight, self.bias
+        )
 
 
 class GroupNormNCHW(nn.Module):
@@ -238,24 +329,9 @@ class GroupNormNCHW(nn.Module):
             self.bias = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        B, C = x.shape[0], x.shape[1]
-        G = self.num_groups
-        
-        # Reshape (N, C, H, W) -> (N, G, C//G, H, W)
-        x_reshaped = x.reshape(B, G, C // G, *x.shape[2:])
-        
-        axes = tuple(range(2, x_reshaped.ndim))
-        mean = x_reshaped.mean(axis=axes, keepdims=True)
-        var = ((x_reshaped - mean) ** 2).mean(axis=axes, keepdims=True)
-        
-        x_norm = (x_reshaped - mean) * mx.rsqrt(var + self.eps)
-        x_out = x_norm.reshape(x.shape)
-        
-        if self.affine:
-            shape = [1, C] + [1] * (x_out.ndim - 2)
-            x_out = x_out * self.weight.reshape(shape) + self.bias.reshape(shape)
-            
-        return x_out
+        return _group_norm_via_layer_norm(
+            x, self.num_groups, self.eps, self.weight, self.bias
+        )
 
 
 class GLUNCL(nn.Module):

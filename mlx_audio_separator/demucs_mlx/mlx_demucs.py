@@ -8,13 +8,20 @@ Optimized and Corrected:
 from __future__ import annotations
 
 import math
+import os
 import typing as tp
 from functools import lru_cache
 
 import mlx.core as mx
 import mlx.nn as nn
 
-from .mlx_layers import Conv1dNCL, ConvTranspose1dNCL, Lambda
+from .mlx_layers import (
+    Conv1dNCL,
+    ConvTranspose1dNCL,
+    Lambda,
+    _group_norm_via_layer_norm,
+    _use_fused_gn_glu,
+)
 from .mlx_utils import MLXStateDictMixin, center_trim, unfold
 
 # ---------------------------------------------------------------------------
@@ -203,32 +210,9 @@ class GroupNorm(nn.Module):
             self.bias = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        B, C = x.shape[0], x.shape[1]
-        G = self.num_groups
-        if C % G != 0:
-            raise ValueError(f"num_channels {C} not divisible by num_groups {G}")
-        
-        # Reshape to (B, G, C//G, ...)
-        x_reshaped = x.reshape(B, G, C // G, *x.shape[2:])
-        
-        # Calculate stats
-        axes = tuple(range(2, x_reshaped.ndim))
-        mean = x_reshaped.mean(axis=axes, keepdims=True)
-        var = ((x_reshaped - mean) ** 2).mean(axis=axes, keepdims=True)
-        
-        # Normalize
-        x_norm = (x_reshaped - mean) * mx.rsqrt(var + self.eps)
-        
-        # Restore original shape
-        # Fix: Use x.shape explicitly to handle both 3D (Audio) and 4D (Image) inputs correctly
-        x_out = x_norm.reshape(x.shape)
-        
-        if self.affine:
-            # Broadcast weight/bias: (1, C, 1...)
-            shape = [1, C] + [1] * (x_out.ndim - 2)
-            x_out = x_out * self.weight.reshape(shape) + self.bias.reshape(shape)
-            
-        return x_out
+        return _group_norm_via_layer_norm(
+            x, self.num_groups, self.eps, self.weight, self.bias
+        )
 
 
 class LayerScale(nn.Module):
@@ -408,6 +392,9 @@ class DConv(nn.Module):
         self.channels = channels
         self.compress = compress
         self.depth = abs(depth)
+        self._compile_inference = not (attn or lstm)
+        self._compiled_layers = None
+        self._compiled_signatures = None
         dilate = depth > 0
 
         def norm_fn(d: int) -> nn.Module:
@@ -420,7 +407,7 @@ class DConv(nn.Module):
         act = gelu if gelu_act else (lambda x: mx.maximum(x, 0))
 
         # Use FusedGroupNormGELU when norm is enabled and activation is gelu
-        use_fused_gn_gelu = norm and gelu_act
+        use_fused_gn_gelu = norm and gelu_act and _use_fused_gn_glu()
 
         self.layers = []
         for d in range(self.depth):
@@ -456,9 +443,62 @@ class DConv(nn.Module):
             self.layers.append(nn.Sequential(*mods))
 
     def __call__(self, x: mx.array) -> mx.array:
-        for layer in self.layers:
+        layers = self.layers
+        if not self.training and self._compile_inference and _dconv_compile_enabled():
+            signatures = tuple(_dconv_block_signature(layer) for layer in layers)
+            if self._compiled_signatures != signatures:
+                previous = self._compiled_layers or []
+                self._compiled_layers = [
+                    previous[index]
+                    if self._compiled_signatures is not None
+                    and index < len(previous)
+                    and self._compiled_signatures[index] == signature
+                    else _compile_dconv_block(layer)
+                    for index, (layer, signature) in enumerate(zip(layers, signatures))
+                ]
+                self._compiled_signatures = signatures
+            layers = self._compiled_layers
+        for layer in layers:
             x = x + layer(x)
         return x
+
+
+def _dconv_compile_enabled() -> bool:
+    """Opt in to DConv compilation for experiments on this runtime.
+
+    The existing whole-model compile gives no additional gain from DConv
+    compilation, and the eager-forward comparison was slower on this host.
+    Both spellings below allow an explicit override.
+    """
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_DCONV_COMPILE")
+    if raw is None:
+        raw = os.getenv("DEMUCS_MLX_COMPILE_DCONV", "0")
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _compile_dconv_block(block: nn.Module):
+    """Keep compiled graphs outside the parameter tree of an inference block."""
+
+    def forward(value):
+        return block(value)
+
+    return mx.compile(forward)
+
+
+def _dconv_block_signature(block: nn.Module) -> tuple[int, ...]:
+    """Invalidate captured weights when an inference-only block is edited."""
+    modules = (
+        block.layers[0].conv,
+        block.layers[1],
+        block.layers[3].conv,
+        block.layers[4],
+        block.layers[6],
+    )
+    return (id(block),) + tuple(
+        id(getattr(module, name, None))
+        for module in modules
+        for name in ("weight", "bias", "scale")
+    )
 
 
 class DemucsMLX(MLXStateDictMixin, nn.Module):

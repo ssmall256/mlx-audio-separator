@@ -124,6 +124,16 @@ Median speedup across the 4-model overlap set: **1.847x**.
 
 These numbers are scoped to the benchmark settings above and are not universal guarantees for all machines, models, or audio inputs.
 
+The embedded Demucs implementation also includes faster GroupNorm and phased
+decoders. A paired, loaded-model comparison measured **10–11% less time**
+for default two-shift `htdemucs` inference on 30- and 60-second synthetic inputs; see
+[Demucs tuning and measurements](docs/tuning.md). For the fine-tuned bag, ask
+for one stem to run only its specialist model:
+
+```bash
+mlx-audio-separator song.mp3 -m htdemucs_ft.yaml --single_stem bass
+```
+
 ## Stable Runtime Tuning
 
 **The defaults are the recommended configuration.** Every inference option ships

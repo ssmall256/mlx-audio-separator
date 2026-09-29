@@ -15,7 +15,9 @@ record.
 |---|---|---|
 | Demucs compiled forward | **on** | `mx.compile` on the model forward: **+15.9%** end to end, +16.8% with the flush below, and faster on the first call too. Output is 107-115 dB SNR from eager (compilation reassociates float adds). `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` disables. |
 | Demucs overlap-add flush | **every update** | Was every 8. +4.3% on 60 s, output bit-identical. Sweep: 1 -> +4.3%, 2 -> +3.5%, 4 -> +1.7%, 16 -> +1.0%. |
-| Demucs fused GroupNorm/GLU kernels | **off** | Same speed as the unfused path on current hardware, so there is nothing to trade. `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` enables them; output matches the unfused path to ~118 dB SNR. |
+| Demucs GroupNorm | **fast MLX LayerNorm** | Flattens each channel group and uses `mx.fast.layer_norm`. `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` opts into the older custom GroupNorm+activation modules. |
+| Demucs phased decoders | **on for FP32 kernel-8/stride-4** | Computes four two-tap phases and interleaves them; other shapes and dtypes retain the ordinary MLX transposed convolution. |
+| Demucs DConv compile | **off** | The existing whole-model compile makes separate DConv compilation redundant. It remains available for experiments. |
 | Demucs batch size | **2** | Fastest *and* smallest: 0.872 s / 4.75 GB vs 1.870 s / 9.20 GB at batch 8 on a 45 s clip. Batch 12 is ~10x slower. |
 | Demucs shifts | **2** | Matches python-audio-separator. Upstream `demucs` uses 1; each shift costs a full pass, so `--demucs_shifts 1` roughly halves runtime at some quality cost. |
 | Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
@@ -54,8 +56,8 @@ results; they exist for benchmarking, parity investigations and debugging.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE` | `off` | `all`, `glu_only`, `gelu_only` or `off`. Re-enables the fused kernels. Costs parity; see above. |
-| `MLX_AUDIO_SEPARATOR_DEMUCS_USE_FUSED_GN_GLU` | — | Equivalent switch in standalone `demucs-mlx` (`DEMUCS_MLX_USE_FUSED_GN_GLU`). |
+| `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE` | `off` | `all`, `glu_only`, `gelu_only` or `off`. Selects the custom fused modules when the model is loaded. |
+| `MLX_AUDIO_SEPARATOR_DEMUCS_DCONV_COMPILE` | `0` | Enables separate DConv block compilation. The standalone `DEMUCS_MLX_COMPILE_DCONV` spelling is accepted as a fallback. |
 | `MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED` | off | Caps reduction threadgroups at 256 and disables fused GroupNorm. |
 | `MLX_AUDIO_SEPARATOR_DETERMINISTIC_ACCUMULATION` | off | Forces ordered overlap-add accumulation. Slower; for reproducibility checks. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL` | off | Inserts `mx.eval` barriers through the forward pass. |
@@ -93,6 +95,62 @@ mlx-audio-separator input.wav --precision fp32
 defaults, those four together move the result by well under 1 dB -- the ~20 dB
 gap they used to close came entirely from the fused GroupNorm kernels, which
 are now off by default.
+
+## Demucs improvements ported on 2026-09-29
+
+The embedded default `htdemucs` path now uses fast GroupNorm and phased
+waveform/frequency decoders. A same-process benchmark loaded the old and new
+module variants independently, warmed each path, and alternated their order
+on identical synthetic stereo inputs (`mq-19a2bb`) on an M4 Max with MLX
+0.32.2. The existing whole-model compile remained enabled in both paths.
+The benchmark used this separator's **default two shifts**, 25% overlap, batch
+two, and materialized all four stems; it excluded model loading and file I/O.
+
+| Input | Previous | New | Less wall time | More audio per second | Minimum stem SNR | Peak error |
+|---:|---:|---:|---:|---:|---:|---:|
+| 30 s | 1.037 s | **0.931 s** | **10.2%** | **11.4%** | 103.15 dB | 1.10e-7 |
+| 60 s | 1.957 s | **1.742 s** | **11.0%** | **12.3%** | 104.81 dB | 7.45e-8 |
+
+These are means of two warmed pairs. Other processes used the GPU during
+15.3% of this job's wall time; no other MetalQ job ran concurrently. Both
+pairs at each length agreed closely. A one-shift paired run (`mq-7ae170`)
+measured 10.7% and 18.5% less wall time at 30 and 60 seconds, with larger
+pair-to-pair variation and 27.8% other-process GPU activity. Compare paths
+within a job, not absolute times across jobs.
+The six-source checkpoint also converted through this repository's restricted
+loader and wrote six 44,100-frame outputs from a one-second smoke input
+(`mq-d40bc5`, `mq-31ba30`).
+
+Separate DConv compilation did not help this copy of Demucs. With the
+whole-model forward compiled, eager versus separately compiled DConv was a
+timing tie and output was exactly equal (`mq-d599f4`). With whole-model
+compilation disabled, separate DConv was 2.9% slower at 30 seconds and 5.8%
+slower at 60 seconds (`mq-f7666b`). It is therefore opt-in here.
+
+For `htdemucs_ft`, `--single_stem vocals`, `--single_stem drums`,
+`--single_stem bass`, or `--single_stem other` now runs only its contributing
+specialist model. Previously the separator computed all four and discarded
+three after inference. A real-model alternating benchmark (`mq-b67a01`)
+with one shift measured **3.83–4.26×** faster vocals-only inference at 30
+and 60 seconds;
+the selected samples matched the full bag exactly. This changes the requested
+output to one stem and is separate from the default four-stem gain. The job
+had 37.6% other-process GPU activity, so its absolute times are not directly
+comparable to the default-model table.
+
+The standalone project's ANE option was not carried over: its current offload
+is a throughput tie, and its compiled asset is validated against that
+project's separate weight cache. The larger ANE waveform stages did not pass
+stem-fidelity checks. The spectral frontend was also left as is; its measured
+share of a segment was about 1.7% in the standalone project.
+
+Reproduce the paired comparisons and fine-tuned stem benchmark through MetalQ:
+
+```bash
+metalq submit -w --no-env-sync --queue-exclusive -n demucs-port-paired -- python scripts/perf/demucs_port_paired.py --shifts 2
+metalq submit -w --no-env-sync --queue-exclusive -n demucs-dconv-paired -- python scripts/perf/demucs_port_paired.py --comparison dconv
+metalq submit -w --no-env-sync --queue-exclusive -n demucs-ft-stem -- python scripts/perf/bench_ft_single_stem.py
+```
 
 ### BS-Roformer already has its compile win
 
@@ -133,4 +191,3 @@ smaller than that floor has not been shown to do anything. On a loaded laptop it
 reports a ~40% floor and will happily show you five "wins" of 46-56%; on an idle
 M4 the same run gives 0.4-1.0%. If the floor comes back above a few percent the
 measurement is void — move machines rather than reading the table.
-

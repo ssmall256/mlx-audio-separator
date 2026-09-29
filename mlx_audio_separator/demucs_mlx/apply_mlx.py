@@ -172,6 +172,8 @@ def apply_model(
     batch_size: int = DEFAULT_BATCH_SIZE,
     seed: tp.Optional[int] = None,
     _rng: tp.Optional[random.Random] = None,
+    *,
+    source_index: tp.Optional[int] = None,
 ):
     if _rng is None:
         _rng = random if seed is None else random.Random(int(seed))
@@ -184,6 +186,31 @@ def apply_model(
     # --- BagOfModels Handling ---
     from .mlx_convert import BagOfModelsMLX
     if isinstance(model, BagOfModelsMLX):
+        if source_index is not None:
+            if not isinstance(source_index, int) or not 0 <= source_index < len(model.sources):
+                raise ValueError("source_index must identify a source in the model")
+            active = [
+                index for index, weights in enumerate(model.weights)
+                if weights[source_index] != 0
+            ]
+            if len(active) != 1:
+                raise ValueError("Selected source requires exactly one contributing model")
+            model_index = active[0]
+            # Preserve the chosen model's shift offsets and the caller's RNG state.
+            for earlier in model.models[:model_index]:
+                for _ in range(shifts):
+                    _rng.randint(0, int(0.5 * earlier.samplerate))
+            result = apply_model(
+                model.models[model_index], mix, shifts, split, overlap,
+                transition_power, progress, num_workers, segment, batch_size,
+                seed=seed, _rng=_rng,
+            )
+            for later in model.models[model_index + 1:]:
+                for _ in range(shifts):
+                    _rng.randint(0, int(0.5 * later.samplerate))
+            selected = result[:, source_index:source_index + 1]
+            weight = float(model.weights[model_index][source_index])
+            return selected * weight / float(model.totals[source_index])
         totals = [0.0] * len(model.sources)
         estimates = None
         min_length = None
@@ -218,6 +245,9 @@ def apply_model(
         denom = mx.array(totals, dtype=estimates.dtype).reshape(1, -1, 1, 1)
         estimates = estimates / denom
         return estimates
+
+    if source_index is not None:
+        raise ValueError("Selected source requires a model bag")
 
     # --- Standard Inference ---
     if isinstance(mix, TensorChunk):

@@ -90,6 +90,11 @@ class DemucsSeparator(CommonSeparator):
             batch_size=self.batch_size,
             seed=self.seed,
             progress=self.log_level <= 10,  # Show progress for DEBUG level
+            stem=(
+                self.output_single_stem.lower()
+                if self._demucs_model_name == "htdemucs_ft" and self.output_single_stem is not None
+                else None
+            ),
         )
 
         self.logger.info(
