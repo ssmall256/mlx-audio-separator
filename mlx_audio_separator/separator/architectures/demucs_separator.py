@@ -192,18 +192,23 @@ class DemucsSeparator(CommonSeparator):
             if self.output_single_stem is not None and stem_name.lower() != self.output_single_stem.lower():
                 continue
 
-            # Postprocess host transfer per emitted stem only.
+            # Postprocess per emitted stem (kept in pure MLX for zero-copy write).
             t0 = time.perf_counter()
             if target_sr != model_sr:
                 stem_data = mac.resample(stem_data, model_sr, target_sr, layout="channels_first")
-            stem_np = np.asarray(stem_data)
-            if stem_np.ndim == 2:
-                stem_np = stem_np.T
+            if isinstance(stem_data, mx.array):
+                mx.eval(stem_data)
+                stem_out = stem_data
+            else:
+                stem_np = np.asarray(stem_data)
+                if stem_np.ndim == 2:
+                    stem_np = stem_np.T
+                stem_out = stem_np
             self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
             stem_output_path = self.get_stem_output_path(stem_name, custom_output_names)
             self.logger.info(f"Writing stem '{stem_name}' to {stem_output_path}")
-            self.write_audio(stem_output_path, stem_np)
+            self.write_audio(stem_output_path, stem_out)
 
             if self.output_dir:
                 full_path = os.path.join(self.output_dir, stem_output_path)

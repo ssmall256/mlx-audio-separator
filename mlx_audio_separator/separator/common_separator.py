@@ -6,6 +6,7 @@ import re
 import time
 from logging import Logger
 
+import mlx.core as mx
 import mlx_audio_io as mac
 import numpy as np
 
@@ -14,7 +15,14 @@ from mlx_audio_separator.utils.performance import AsyncStemWriter, clear_mlx_cac
 
 def normalize(wave, max_peak=1.0, min_peak=None):
     """Normalize (or amplify) audio waveform to a specified peak value."""
-    maxv = np.abs(wave).max()
+    if isinstance(wave, mx.array):
+        maxv = float(mx.max(mx.abs(wave)).item())
+        if maxv > max_peak:
+            wave = wave * (max_peak / maxv)
+        elif min_peak is not None and maxv < min_peak:
+            wave = wave * (min_peak / maxv)
+        return wave
+    maxv = float(np.abs(wave).max())
     if maxv > max_peak:
         wave *= max_peak / maxv
     elif min_peak is not None and maxv < min_peak:
@@ -28,7 +36,11 @@ def match_array_shapes(array_1, array_2):
         array_1 = array_1[..., :array_2.shape[-1]]
     elif array_1.shape[-1] < array_2.shape[-1]:
         padding = array_2.shape[-1] - array_1.shape[-1]
-        array_1 = np.pad(array_1, [(0, 0)] * (array_1.ndim - 1) + [(0, padding)], "constant")
+        if isinstance(array_1, mx.array):
+            pad_width = [(0, 0)] * (array_1.ndim - 1) + [(0, padding)]
+            array_1 = mx.pad(array_1, pad_width)
+        else:
+            array_1 = np.pad(array_1, [(0, 0)] * (array_1.ndim - 1) + [(0, padding)], "constant")
     return array_1
 
 
@@ -241,7 +253,8 @@ class CommonSeparator:
 
         stem_source = normalize(wave=stem_source, max_peak=self.normalization_threshold, min_peak=self.amplification_threshold)
 
-        if np.max(np.abs(stem_source)) < 1e-6:
+        max_val = float(mx.max(mx.abs(stem_source)).item()) if isinstance(stem_source, mx.array) else float(np.max(np.abs(stem_source)))
+        if max_val < 1e-6:
             self.logger.warning("stem_source array is near-silent; writing silent stem to preserve output contract.")
 
         if self.output_dir:
@@ -292,6 +305,8 @@ class CommonSeparator:
                 }
                 if file_format == "flac":
                     save_kwargs["flac_compression"] = "fast" if flac_fast_write else "default"
+                if isinstance(stem_source, mx.array):
+                    mx.eval(stem_source)
                 try:
                     mac.save(str(stem_path), stem_source, self.sample_rate, **save_kwargs)
                 except TypeError:

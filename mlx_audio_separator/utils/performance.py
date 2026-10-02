@@ -11,6 +11,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+import mlx.core as mx
 import numpy as np
 
 DEFAULT_PERFORMANCE_PARAMS = {
@@ -200,7 +201,7 @@ def select_best_candidate(timings_by_candidate: dict[int, list[float]], tie_rati
 @dataclass
 class _SaveTask:
     stem_path: str
-    stem_source: np.ndarray
+    stem_source: Any
     sample_rate: int
     encoding: str
     bitrate: str
@@ -232,9 +233,12 @@ class AsyncStemWriter:
                 if task is None:
                     self._queue.task_done()
                     return
+                save_source = task.stem_source
+                if isinstance(save_source, mx.array):
+                    mx.eval(save_source)
                 mac.save(
                     str(task.stem_path),
-                    task.stem_source,
+                    save_source,
                     task.sample_rate,
                     encoding=task.encoding,
                     bitrate=task.bitrate,
@@ -242,9 +246,12 @@ class AsyncStemWriter:
                 )
             except TypeError:
                 # Backward-compatible fallback for mlx-audio-io versions without flac_compression.
+                save_source = task.stem_source
+                if isinstance(save_source, mx.array):
+                    mx.eval(save_source)
                 mac.save(
                     str(task.stem_path),
-                    task.stem_source,
+                    save_source,
                     task.sample_rate,
                     encoding=task.encoding,
                     bitrate=task.bitrate,
@@ -258,7 +265,7 @@ class AsyncStemWriter:
     def submit(
         self,
         stem_path: str,
-        stem_source: np.ndarray,
+        stem_source: Any,
         sample_rate: int,
         encoding: str,
         bitrate: str,
@@ -266,9 +273,14 @@ class AsyncStemWriter:
     ):
         if self._error is not None:
             raise self._error
+        if isinstance(stem_source, mx.array):
+            mx.eval(stem_source)
+            source_payload = stem_source
+        else:
+            source_payload = np.ascontiguousarray(stem_source)
         task = _SaveTask(
             stem_path=stem_path,
-            stem_source=np.ascontiguousarray(stem_source),
+            stem_source=source_payload,
             sample_rate=int(sample_rate),
             encoding=str(encoding),
             bitrate=str(bitrate),

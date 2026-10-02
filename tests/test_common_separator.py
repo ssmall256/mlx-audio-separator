@@ -122,3 +122,58 @@ def test_karaoke_models_still_materialize_silent_vocals_files(tmp_path, monkeypa
     for output_path in written:
         assert output_path.is_file(), f"missing output file: {output_path}"
         assert output_path.stat().st_size > 0
+
+
+def test_write_audio_mlx_array_zero_copy(tmp_path, monkeypatch):
+    import mlx.core as mx
+
+    saved_types = []
+
+    def fake_save(path, stem_source, sample_rate, **kwargs):
+        saved_types.append(type(stem_source))
+        Path(path).write_bytes(b"RIFF")
+
+    monkeypatch.setattr("mlx_audio_separator.separator.common_separator.mac.save", fake_save)
+
+    separator = _make_separator(tmp_path, "htdemucs")
+    arr_mx = mx.zeros((2, 1024), dtype=mx.float32)
+    output_name = "test_stem.wav"
+
+    separator.write_audio(output_name, arr_mx)
+
+    out_path = tmp_path / output_name
+    assert out_path.is_file()
+    assert len(saved_types) == 1
+    assert issubclass(saved_types[0], mx.array)
+
+
+def test_async_stem_writer_mlx_array_zero_copy(tmp_path, monkeypatch):
+    import mlx.core as mx
+    from mlx_audio_separator.utils.performance import AsyncStemWriter
+
+    saved_types = []
+
+    def fake_save(path, stem_source, sample_rate, **kwargs):
+        saved_types.append(type(stem_source))
+        Path(path).write_bytes(b"RIFF")
+
+    monkeypatch.setattr("mlx_audio_io.save", fake_save)
+
+    writer = AsyncStemWriter(workers=2)
+    arr_mx = mx.zeros((2, 1024), dtype=mx.float32)
+    dest = tmp_path / "async_stem.wav"
+
+    writer.submit(
+        stem_path=str(dest),
+        stem_source=arr_mx,
+        sample_rate=44100,
+        encoding="pcm16",
+        bitrate="auto",
+    )
+    writer.flush()
+    writer.close()
+
+    assert dest.is_file()
+    assert len(saved_types) == 1
+    assert issubclass(saved_types[0], mx.array)
+
