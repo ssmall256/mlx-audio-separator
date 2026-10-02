@@ -63,8 +63,8 @@ class Separator:
         shifts: 1
         overlap: 0.25
         segments_enabled: True
-        batch_size: 2
-        seed: 0
+        batch_size: "auto"
+        seed: None
 
     MDXC Architecture Specific Attributes & Defaults:
         segment_size: 256

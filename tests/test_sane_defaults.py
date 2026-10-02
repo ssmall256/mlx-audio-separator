@@ -79,9 +79,9 @@ def test_core_demucs_shift_default_matches_embedded_api(tmp_path):
     assert wrapper.arch_specific_params["Demucs"]["shifts"] == DEFAULT_DEMUCS_SHIFTS
 
 
-def test_demucs_shifts_are_seeded_by_default():
-    """Identical input should reproduce."""
-    assert DEFAULT_SHIFT_SEED is not None
+def test_demucs_shifts_are_random_by_default():
+    """Upstream Demucs and demucs-mlx default to unseeded / random shifts."""
+    assert DEFAULT_SHIFT_SEED is None
 
 
 def test_speed_modes_do_not_select_a_worse_batch_size():

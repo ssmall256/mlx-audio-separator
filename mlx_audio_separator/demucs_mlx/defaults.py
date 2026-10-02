@@ -18,9 +18,9 @@ DEFAULT_BATCH_SIZE = "auto"
 #: can improve quality, but are an explicit inference-time tradeoff.
 DEFAULT_DEMUCS_SHIFTS = 1
 
-#: Seed for the shift-trick offsets. A fixed default makes repeated runs on the
-#: same input reproduce; pass an explicit seed, or ``None``, to vary per run.
-DEFAULT_SHIFT_SEED = 0
+#: Seed for the shift-trick offsets. Upstream Demucs defaults to None (random);
+#: pass an explicit integer seed to reproduce.
+DEFAULT_SHIFT_SEED = None
 
 
 #: VR-arch segments per forward pass.

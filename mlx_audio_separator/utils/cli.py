@@ -18,7 +18,7 @@ from mlx_audio_separator.demucs_mlx.defaults import (
 
 def _seed_arg(value: str):
     """Parse --demucs_seed, accepting 'random'/'none' for unseeded runs."""
-    if value.strip().lower() in {"random", "none", "null"}:
+    if value is None or str(value).strip().lower() in {"random", "none", "null"}:
         return None
     try:
         return int(value)
@@ -231,9 +231,8 @@ def main():
         type=_seed_arg,
         default=DEFAULT_SHIFT_SEED,
         help=(
-            "Seed for the Demucs shift offsets. Fixed by default so repeated "
-            "runs on the same input reproduce; pass 'random' to vary per run "
-            "(default: %(default)s)."
+            "Seed for the Demucs shift offsets. None by default to vary per run "
+            "(matching upstream Demucs); pass an integer to reproduce (default: %(default)s)."
         ),
     )
     demucs_params.add_argument("--demucs_overlap", type=float, default=0.25, help="Overlap ratio (default: %(default)s).")
