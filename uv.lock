@@ -83,9 +83,9 @@ name = "cattrs"
 version = "26.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "attrs" },
-    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
-    { name = "typing-extensions" },
+    { name = "attrs", marker = "sys_platform == 'darwin'" },
+    { name = "exceptiongroup", marker = "python_full_version < '3.11' and sys_platform == 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/23/75/e72b839c3dc869c990b4842f3dba730bdcdf5215f68fc7955edf849a1792/cattrs-26.2.1.tar.gz", hash = "sha256:679132bfdc225c5ee40c024fc42519954767c387f950dc6751946c586bccdc6d", size = 525617, upload-time = "2026-09-26T20:53:21.114Z" }
 wheels = [
@@ -296,16 +296,16 @@ name = "coremltools"
 version = "9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "attrs" },
-    { name = "cattrs" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-19-mlx-audio-separator-ane-convert') or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and extra == 'extra-19-mlx-audio-separator-ane-convert') or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-19-mlx-audio-separator-ane-convert') or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
-    { name = "packaging" },
-    { name = "protobuf" },
-    { name = "pyaml" },
-    { name = "sympy" },
-    { name = "tqdm" },
+    { name = "attrs", marker = "sys_platform == 'darwin'" },
+    { name = "cattrs", marker = "sys_platform == 'darwin'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and sys_platform == 'darwin' and extra == 'extra-19-mlx-audio-separator-ane-convert') or (python_full_version >= '3.11' and extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert') or (sys_platform != 'darwin' and extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and sys_platform == 'darwin' and extra == 'extra-19-mlx-audio-separator-ane-convert') or (python_full_version != '3.11.*' and extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert') or (sys_platform != 'darwin' and extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-19-mlx-audio-separator-ane-convert') or (python_full_version < '3.12' and extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert') or (sys_platform != 'darwin' and extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
+    { name = "packaging", marker = "sys_platform == 'darwin'" },
+    { name = "protobuf", marker = "sys_platform == 'darwin'" },
+    { name = "pyaml", marker = "sys_platform == 'darwin'" },
+    { name = "sympy", marker = "sys_platform == 'darwin'" },
+    { name = "tqdm", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/79/e6/8cb11a246f61736e75b20488b9c3cf9c208f500c9a3f92d717dbf592348c/coremltools-9.0.tar.gz", hash = "sha256:4ff346b29c31c4b45acd19a20e0f0a1ac65180a96776e62f15bd5c46f4926687", size = 1656978, upload-time = "2025-11-10T21:51:23.855Z" }
 wheels = [
@@ -1086,13 +1086,13 @@ cpu = [
 
 [[package]]
 name = "mlx-audio-io"
-version = "1.3.21"
+version = "1.3.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mlx", marker = "sys_platform == 'darwin' or sys_platform == 'linux' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
     { name = "mlx", extra = ["cpu"], marker = "sys_platform == 'linux' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/4c/61cde2f12d5f18924d7f38667a1acd256c2d168326aaabde397d378fc5f9/mlx_audio_io-1.3.21.tar.gz", hash = "sha256:534a95e01db2393c6f50f03832aac455e51980031dfc2ee937d5f0f7033a2cfe", size = 358360, upload-time = "2026-10-02T00:10:43.336Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/ae/65fc556cdd3470f799f05e736dd893d5786932855a5f06b7c7cb74cc3784/mlx_audio_io-1.3.22.tar.gz", hash = "sha256:2d3f10783bfbc67ba065f9d4e5df4712d7c1783c3e68bda8091b12caff6169f3", size = 363111, upload-time = "2026-10-02T15:03:05.011Z" }
 
 [[package]]
 name = "mlx-audio-separator"
@@ -1139,8 +1139,8 @@ requires-dist = [
     { name = "demucs", marker = "extra == 'ane-convert'", specifier = ">=4.0" },
     { name = "demucs", marker = "extra == 'convert'", specifier = ">=4.0" },
     { name = "mlx", specifier = ">=0.32.3,<0.33" },
-    { name = "mlx-audio-io", specifier = ">=1.3.21,<1.4" },
-    { name = "mlx-spectro", specifier = ">=0.9.9" },
+    { name = "mlx-audio-io", specifier = ">=1.3.22,<1.4" },
+    { name = "mlx-spectro", specifier = ">=0.9.10" },
     { name = "numpy", specifier = ">=2" },
     { name = "onnx", marker = "extra == 'convert'", specifier = ">=1.15" },
     { name = "packaging" },
@@ -1179,7 +1179,7 @@ wheels = [
 
 [[package]]
 name = "mlx-spectro"
-version = "0.9.9"
+version = "0.9.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mlx" },
@@ -1187,9 +1187,9 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/05/97265b2d44b9e98e0c1139e3e4588ce8db556521d197020cea19fe3e8181/mlx_spectro-0.9.9.tar.gz", hash = "sha256:42044a816d2fae5eed48ca10a5e1793d0c370b7f49f959c86dc0283141af07d9", size = 284219, upload-time = "2026-10-02T01:09:19.242Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/5c/443084810fd7e381e305f9f5d032e56733c6b835c70c2a6851280be16575/mlx_spectro-0.9.10.tar.gz", hash = "sha256:19bdacfab732d6eefcf06fc87849a6a0425b32133cdf52a1d7f5a2ddf713a8e7", size = 286739, upload-time = "2026-10-02T14:48:55.058Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/d8/07ed5395a6945cd2c9b6fbbbe4aeb06407099b09d37de47fc50c698689f8/mlx_spectro-0.9.9-py3-none-any.whl", hash = "sha256:71d48f671bbe58ca43662d9a9bceb48fcf0668203cbabaf7dd6a4391a232f80f", size = 84084, upload-time = "2026-10-02T01:09:17.775Z" },
+    { url = "https://files.pythonhosted.org/packages/06/ae/a0b79deb09b39d8726989b5293dabf7d43c3d65468dbec7f5636ed4b6612/mlx_spectro-0.9.10-py3-none-any.whl", hash = "sha256:4c15f0a652a6dbd8012c619245bcccd4995ecfca1e8f8fbcc2b03f2ba68f507c", size = 85196, upload-time = "2026-10-02T14:48:53.741Z" },
 ]
 
 [[package]]
@@ -1958,7 +1958,7 @@ name = "pyaml"
 version = "26.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyyaml" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/15/6a/acfdf17de0d6947b419da8696e02b781b18de2cf49e0472298b50e1f0711/pyaml-26.7.0.tar.gz", hash = "sha256:11cda3a796efc6dbce0d56836be56cfd26289dad07bcd78e9904086729929c93", size = 30669, upload-time = "2026-07-04T00:34:38.532Z" }
 wheels = [
@@ -1996,7 +1996,7 @@ name = "pyobjc-framework-cocoa"
 version = "12.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
+    { name = "pyobjc-core", marker = "sys_platform == 'darwin' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/75/76/49c6da2c6a831020b4854ba20079d5a1030474bffc776b7b73c2eeff8c15/pyobjc_framework_cocoa-12.2.2.tar.gz", hash = "sha256:c96c0ef69a71afbbb0e6a7d594b455c5fe47d62e0db376ee7a2b4b828c16ace9", size = 3132831, upload-time = "2026-08-11T19:44:02.288Z" }
 wheels = [
@@ -2016,8 +2016,8 @@ name = "pyobjc-framework-coreml"
 version = "12.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyobjc-core" },
-    { name = "pyobjc-framework-cocoa" },
+    { name = "pyobjc-core", marker = "sys_platform == 'darwin' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin' or (extra == 'extra-19-mlx-audio-separator-ane-convert' and extra == 'extra-19-mlx-audio-separator-convert')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b7/3b/c835535e7aef41afc953e5597ea41e693b7bae80d753ab74b9721e07cba5/pyobjc_framework_coreml-12.2.2.tar.gz", hash = "sha256:3e6abe134634adbcc0c1e843826e42df86e63beb3bc7e8e4a914e93179ae1e75", size = 49750, upload-time = "2026-08-11T19:44:14.011Z" }
 wheels = [

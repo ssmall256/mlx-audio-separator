@@ -81,7 +81,8 @@ All notable changes to this project are documented in this file.
   Core ML without NumPy, and the `ane` / `ane-convert` extras install its runtime
   and converter. It matches the GPU path at 68-92 dB but is not faster on M4 Pro
   or M4 Max.
-- Dependencies: MLX >= 0.32.3, `mlx-audio-io` >= 1.3.21, `mlx-spectro` >= 0.9.9.
+- Dependencies: MLX >= 0.32.3, `mlx-audio-io` >= 1.3.22 (strided arrays
+  written correctly, which also fixes VR output), `mlx-spectro` >= 0.9.10.
 - Obsolete optimization notebooks were removed from `docs/`; `docs/tuning.md`
   holds the current defaults and their measurements.
 
