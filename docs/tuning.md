@@ -14,18 +14,19 @@ record.
 | Setting | Default | Why |
 |---|---|---|
 | Demucs compiled forward | **on** | `mx.compile` on the model forward: **+15.9%** end to end in the original comparison, and faster on the first call too. Output is 107-115 dB SNR from eager (compilation reassociates float adds). `MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0` disables. |
-| Demucs overlap-add evaluation | **per batch for up to 8 offsets; per update from 9 at batch two** | True per-update evaluation was 3.4% slower on 30 s and 4.3% faster on 60 s; outputs were bit-identical. |
+| Demucs overlap-add | **streamed fused kernel** | Each output span is finalized with the fused Metal kernel as soon as no later chunk can reach it, so only a batch's worth of chunks is held. Bit-identical to one pass over every chunk; 21.7-minute track: 6.2 GB peak vs 9.75 GB collecting all chunks first, time within 0.4%. |
 | Demucs GroupNorm | **fast MLX LayerNorm** | Flattens each channel group and uses `mx.fast.layer_norm`. `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE=all` opts into the older custom GroupNorm+activation modules. |
 | Demucs phased decoders | **on for FP32 kernel-8/stride-4** | Computes four two-tap phases and interleaves them; other shapes and dtypes retain the ordinary MLX transposed convolution. |
 | Demucs DConv compile | **off** | The existing whole-model compile makes separate DConv compilation redundant. It remains available for experiments. |
-| Demucs batch size | **2** | Fastest *and* smallest: 0.872 s / 4.75 GB vs 1.870 s / 9.20 GB at batch 8 on a 45 s clip. Batch 12 is ~10x slower. |
+| Demucs batch size | **`auto`** | Per machine, from interleaved sweeps of batch 1-8 (htdemucs, 216 s): M4 Pro and 32-core M4 Max run 3 (1.5-1.9% faster than 2 on an idle M4 Pro, 4 ties for 0.8 GB more); 40-core M4 Max with >= 64 GB runs 8 (~6% faster than 2, measured under desktop load); smaller chips run 2. Chunks are spread evenly over the batches the target implies. `--demucs_batch_size N` fixes it. |
 | Demucs shifts | **1** | Matches upstream Demucs and the standalone project. Use `--demucs_shifts 2` to spend a second full pass for the shift-averaging quality tradeoff. |
-| Demucs shift seed | **fixed** | Repeated runs on the same input reproduce. `--demucs_seed random` restores per-run variation. |
+| Demucs shift seed | **random** | As upstream: with one shift the offset still varies per run. `--demucs_seed <int>` makes runs reproduce. |
+| Demucs attention precision | **fp32** | Matches upstream Demucs at 81-87 dB SNR. `--demucs_attention_precision fp16` is 3.8% faster (idle M4 Pro, 216 s) and matches at 72-79 dB. |
 | VR batch size | **2** | Batch 1 is never fastest: 2.975 s vs 3.488 s on a 45 s clip, 16.364 s vs 17.946 s on a 195 s one. Batch 4 edges it on long inputs but costs another 2.5 GB. |
 | Roformer/MDXC precision | **fp32** | bf16 measures no faster on current hardware (within a 0.04% noise floor) and costs ~78 dB SNR, so fp32 is the better default. `--precision bf16` remains available. |
 | Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
 | Stem writer threads | **2** | Same measurement: overlaps encoding with inference. |
-| Overlap-add accumulation | `mx.slice_update` | Correct on every supported MLX version. MLX before 0.32.0 corrupts strided slice scatter-add. |
+| Overlap-add accumulation | `array.at[...].add` | MDXC/RoFormer/VR accumulate in place; correct on the supported MLX (>= 0.32.3). |
 
 ### `--speed_mode` is deprecated
 
@@ -59,11 +60,10 @@ results; they exist for benchmarking, parity investigations and debugging.
 | `MLX_AUDIO_SEPARATOR_FUSED_GROUPNORM_MODE` | `off` | `all`, `glu_only`, `gelu_only` or `off`. Selects the custom fused modules when the model is loaded. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_DCONV_COMPILE` | `0` | Enables separate DConv block compilation. The standalone `DEMUCS_MLX_COMPILE_DCONV` spelling is accepted as a fallback. |
 | `MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED` | off | Caps reduction threadgroups at 256 and disables fused GroupNorm. |
-| `MLX_AUDIO_SEPARATOR_DETERMINISTIC_ACCUMULATION` | off | Forces ordered overlap-add accumulation. Slower; for reproducibility checks. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL` | off | Inserts `mx.eval` barriers through the forward pass. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED` | on | Fused iSTFT. Measured effect on output is negligible. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP` | on | vmap-parallel Wiener filtering. `hdemucs`-family only. |
-| `MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD` | off | Restores the legacy `at[].add()` accumulator. **Produces wrong output on MLX < 0.32**; benchmarking only. |
+| `MLX_AUDIO_SEPARATOR_DEMUCS_ATTENTION_FP16` | off | fp16 transformer attention, as `--demucs_attention_precision fp16`. |
 
 ### Roformer / MDXC
 

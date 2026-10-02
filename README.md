@@ -126,7 +126,8 @@ These numbers are scoped to the benchmark settings above and are not universal g
 
 The embedded Demucs implementation also includes faster GroupNorm and phased
 decoders. A paired, loaded-model comparison measured **10–11% less time**
-for default two-shift `htdemucs` inference on 30- and 60-second synthetic inputs; see
+for two-shift `htdemucs` inference (the default before 0.1.19; it is now one
+shift, as upstream) on 30- and 60-second synthetic inputs; see
 [Demucs tuning and measurements](docs/tuning.md). For the fine-tuned bag, ask
 for one stem to run only its specialist model:
 

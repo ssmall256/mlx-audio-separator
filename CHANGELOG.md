@@ -6,25 +6,82 @@ All notable changes to this project are documented in this file.
 
 ## 0.1.19 - 2026-10-02
 
-### Added
+### Fixed
 
-- RoFormer models now support bit-exact single-stem extraction via `--output_single_stem` (or passing `output_single_stem` to `Separator`). When isolating a target stem like Vocals or Instrumental, unrequested stems bypass evaluation and inverse STFT transforms entirely, reducing overlap-add memory accumulation by 6×.
-- Dynamic batch tail fitting (`fit_batch_size`) for Demucs segment inference. Rather than zero-padding uneven trailing segments into a full batch, trailing chunks are evenly divided into a smaller uniform sub-batch, preventing wasted FLOPs and eliminating redundant multi-shape JIT compilations.
+- **Demucs output now matches upstream for every model.** Measured end to end
+  against PyTorch Demucs (`demucs.api`, shifts 0, same input), per stem:
+  htdemucs, htdemucs_ft, htdemucs_6s and hdemucs_mmi 75-82 dB SNR (scale
+  invariant) as 16-bit WAV, where the residual is the 16-bit quantization floor
+  on every stem, including htdemucs_6s's near-silent piano stem.
+  `tests/test_demucs_upstream_parity.py` now compares each architecture with
+  upstream. The fixes, shared with demucs-mlx:
+  - The cross-transformer fed the frequency branch the time branch's updated
+    output instead of its input to the layer (htdemucs family matched upstream
+    at 18-24 dB during 0.1.19 development).
+  - `LocalState` attention contracted the softmax weights over the wrong axis;
+    hdemucs_mmi matched upstream at only 10-19 dB in every earlier release.
+  - The time-domain Demucs resampler, `MultiWrap` padding and bias, the Wiener
+    output layout and the missing `mx.angle` were wrong or crashed (only
+    reachable through `demucs_mlx`'s own model list).
+  - Chunks run at upstream's lengths: a custom `--demucs_segment_size` matched
+    at 18-25 dB (and produced garbage output earlier in 0.1.19 development);
+    it now matches at 72-79 dB.
+- **Stems are written with their channels intact.** A (channels, frames) stem
+  was transposed into a strided view that mlx-audio-io 1.3.21 reads as raw
+  memory, scrambling every Demucs stem and, with `--write_workers 1`, every
+  other architecture's. Stems are now passed with their layout and written
+  without a copy.
+- **MDX-Net output was wrong in every release.** UVR's ONNX exports give the
+  TDF linears no bias, but the model was built with one, and the bias kept its
+  random initial value: every run produced different, degraded stems
+  (UVR-MDX-NET-Inst_HQ_3 matched python-audio-separator at 35-38 dB). The
+  linears now follow the checkpoint, and Inst_HQ_3, Kim_Vocal_2 and
+  UVR_MDXNET_KARA_2 match python-audio-separator at 58-63 dB and repeat
+  bit-exactly. A model whose weights are only partly mapped (UVR-MDX-NET-Voc_FT,
+  kuielab_a_vocals, Reverb_HQ_By_FoxJoy) still separates incorrectly, and now
+  says so when it loads.
+- A failed write no longer vanishes or hangs. An error in the writer thread's
+  fallback path killed the thread without recording the error, so `flush()`
+  succeeded, the file was reported written, and `close()` waited forever (for
+  example 24-bit input written as FLAC). The error now fails the file, and the
+  writer stays usable for the next one.
+- A `Separator` built on one thread now works on another (a GUI or server
+  worker): side streams are per thread, and weights and cached arrays are
+  materialized when they are created.
+- Scaling a silent stem up to `--amplification` no longer divides by zero.
 
 ### Changed
 
-- Demucs default shifts is now explicitly 1 (`shifts=1`) across the main CLI, core `Separator` wrapper, and embedded API, matching upstream Demucs default behavior. Previously, the CLI and high-level wrapper defaulted to 2 shifts (two full passes). Pass `--demucs_shifts 2` if you want the multi-pass shift-averaging tradeoff.
-- Demucs shift offsets are unseeded by default (`seed=None`), matching upstream Demucs and `demucs-mlx` behavior. Deterministic runs can still be enabled by supplying `--demucs_seed <int>`.
-- Replaced intermediate synchronous evaluation barriers with non-blocking `mx.async_eval` boundaries in both RoFormer chunking and Demucs segment batches, keeping Apple Silicon GPU execution fully saturated without host stalling.
-- Demucs overlap-add evaluates once per segment batch on shorter tracks and after each segment update from nine offsets at the default batch size.
-- Embedded `demucs-mlx` CLI now uses two concurrent asynchronous stem writers by default.
-- Modernized core dependencies: MLX >= 0.32.3, `mlx-audio-io` >= 1.3.21, and `mlx-spectro` >= 0.9.9.
-- Pruned obsolete optimization experiment notebooks from `docs/` and consolidated hardware tuning, runtime flags, and best practices into `docs/tuning.md`.
-
-### Fixed
-
-- Replaced legacy Python slice accumulation loops across Demucs, MDX, MDXC, and RoFormer overlap-add engines with MLX's native in-place accumulation (`array.at[...].add(...)`), avoiding intermediate buffer allocations and improving kernel fusion.
-- Audio pipeline now yields pure zero-copy MLX arrays directly to `mlx-audio-io` with native `channels_first` layout, eliminating unnecessary intermediate NumPy buffer allocations and conversions.
+- Demucs default shifts is 1 across the CLI, `Separator` and the embedded API,
+  as upstream. It was 2 (two full passes); `--demucs_shifts 2` restores it.
+- Demucs shift offsets are unseeded by default, as upstream: with one shift
+  the offset still varies per run. `--demucs_seed <int>` makes runs reproduce.
+- Demucs batch size defaults to `auto`, now sized from measurements: 3 on M4
+  Pro and 32-core M4 Max (1.5-1.9% faster than 2), 8 on 40-core M4 Max with at
+  least 64 GB, 2 elsewhere. Chunks are spread evenly over the batches the target
+  implies; it no longer drops to batch 2 whenever 2 divides the chunk count.
+- Demucs overlap-add is streamed through the fused Metal kernel: peak memory on
+  a 21.7-minute track is 6.66 GB end to end, against 9.46 GB in 0.1.18.
+- Demucs transformer attention computes in fp32 by default (81-87 dB against
+  upstream). `--demucs_attention_precision fp16` is 3.8% faster and matches at
+  72-79 dB.
+- RoFormer `--single_stem` runs only the heads and inverse STFTs of the
+  requested stem when the model outputs that stem, with bit-identical output.
+- Demucs separation, including `python -m mlx_audio_separator.demucs_mlx`,
+  no longer imports NumPy, and stems go to mlx-audio-io as MLX arrays without
+  host copies.
+- `experimental_demucs_apply_concat_batching` has no effect (it has not since
+  this release's Demucs rewrite) and now says so. Its environment variable and
+  `MLX_AUDIO_SEPARATOR_DETERMINISTIC_ACCUMULATION` are gone.
+- The experimental Neural Engine path for the first HTDemucs convolution
+  (`python -m mlx_audio_separator.demucs_mlx.separate --ane-time-encoder`) now
+  works: its native Core ML bridge ships in the wheel, it moves MLX buffers to
+  Core ML without NumPy, and the `ane` / `ane-convert` extras install its runtime
+  and converter. It matches the GPU path at 68-92 dB but is not faster on M4 Pro
+  or M4 Max.
+- Dependencies: MLX >= 0.32.3, `mlx-audio-io` >= 1.3.21, `mlx-spectro` >= 0.9.9.
+- Obsolete optimization notebooks were removed from `docs/`; `docs/tuning.md`
+  holds the current defaults and their measurements.
 
 ## 0.1.18 - 2026-09-28
 

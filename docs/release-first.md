@@ -47,7 +47,9 @@ path. It does not establish catalog-wide performance or separation quality and
 must not be used to make those claims. Record the tested version, commit, and
 results in the release notes or release review.
 
-The scoped review is in [release-validation.md](release-validation.md).
+[release-validation.md](release-validation.md) holds the last full-gate
+snapshot; it is not a scoped review. Record a scoped review in the release
+notes, as above.
 
 ## Full Gate Inputs
 
