@@ -289,8 +289,7 @@ is the same situation caught before it becomes a symbol error. Same fix.
 | [`docs/release-validation.md`](docs/release-validation.md) | Release evidence snapshot |
 | [`docs/release-first.md`](docs/release-first.md) | Release execution playbook |
 | [`docs/reproducibility.md`](docs/reproducibility.md) | Reproducibility guide |
-| [`docs/wave4-opt-in.md`](docs/wave4-opt-in.md) | Wave 4 opt-in/experimental roadmap |
-| [`docs/bs-roformer-sw-optimization-program.md`](docs/bs-roformer-sw-optimization-program.md) | BS-Roformer-SW candidate gating and promotion table |
+| [`docs/tuning.md`](docs/tuning.md) | Hardware auto-tuning and performance parameter guide |
 | [`CHANGELOG.md`](CHANGELOG.md) | Changelog |
 | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | Third-party attribution and license notices |
 

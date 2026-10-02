@@ -22,7 +22,7 @@ answer in this repo:
   disagrees with a clean baseline. A 0.435 s baseline became 2.19 s this way.
 - **Code-change arms are source patches applied before import**, so no arm can
   leak state into another.
-- **Two same-config control arms.** `docs/roformer-kernel-fusion-followup.md`
+- **Two same-config control arms.** Early exploration
   records two Demucs "wins" of -16% and -20% that had to be discarded because a
   control moved. The floor is now computed automatically rather than being
   something to remember.

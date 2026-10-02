@@ -10,4 +10,4 @@ def test_readme_links_release_docs():
     assert "docs/release-validation.md" in readme
     assert "docs/release-first.md" in readme
     assert "docs/reproducibility.md" in readme
-    assert "docs/wave4-opt-in.md" in readme
+    assert "docs/tuning.md" in readme

@@ -47,7 +47,7 @@ path. It does not establish catalog-wide performance or separation quality and
 must not be used to make those claims. Record the tested version, commit, and
 results in the release notes or release review.
 
-The scoped review for 0.1.18 is in [release-validation-0.1.18.md](release-validation-0.1.18.md).
+The scoped review is in [release-validation.md](release-validation.md).
 
 ## Full Gate Inputs
 
