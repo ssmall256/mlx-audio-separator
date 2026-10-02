@@ -26,10 +26,9 @@ class DemucsSeparator(CommonSeparator):
         self.shifts = arch_config.get("shifts", DEFAULT_DEMUCS_SHIFTS)
         self.overlap = arch_config.get("overlap", 0.25)
         self.segments_enabled = arch_config.get("segments_enabled", True)
-        from mlx_audio_separator.demucs_mlx.hardware import optimal_batch_size
         raw_batch_size = arch_config.get("batch_size", DEFAULT_BATCH_SIZE)
         if raw_batch_size is None or str(raw_batch_size).lower() == "auto":
-            self.batch_size = optimal_batch_size()
+            self.batch_size = "auto"
         else:
             self.batch_size = int(raw_batch_size)
         self.compile = arch_config.get("compile", arch_config.get("demucs_compile", None))
