@@ -4,15 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.1.19 - 2026-10-02
+
+### Added
+
+- RoFormer models now support bit-exact single-stem extraction via `--output_single_stem` (or passing `output_single_stem` to `Separator`). When isolating a target stem like Vocals or Instrumental, unrequested stems bypass evaluation and inverse STFT transforms entirely, reducing overlap-add memory accumulation by 6×.
+- Dynamic batch tail fitting (`fit_batch_size`) for Demucs segment inference. Rather than zero-padding uneven trailing segments into a full batch, trailing chunks are evenly divided into a smaller uniform sub-batch, preventing wasted FLOPs and eliminating redundant multi-shape JIT compilations.
+
 ### Changed
 
-- Demucs now defaults to one shift in the main CLI and wrapper, matching the
-  upstream Demucs default and the embedded API. Pass `--demucs_shifts 2` to
-  retain the previous two-pass setting.
-- Demucs overlap-add evaluates once per segment batch on shorter tracks and
-  after each segment update from nine offsets at the default batch size. The
-  crossover was measured at roughly 50 seconds, with identical stem output.
-- The embedded `demucs-mlx` CLI now uses two concurrent stem writers by default.
+- Demucs default shifts is now explicitly 1 (`shifts=1`) across the main CLI, core `Separator` wrapper, and embedded API, matching upstream Demucs default behavior. Previously, the CLI and high-level wrapper defaulted to 2 shifts (two full passes). Pass `--demucs_shifts 2` if you want the multi-pass shift-averaging tradeoff.
+- Demucs shift offsets are unseeded by default (`seed=None`), matching upstream Demucs and `demucs-mlx` behavior. Deterministic runs can still be enabled by supplying `--demucs_seed <int>`.
+- Replaced intermediate synchronous evaluation barriers with non-blocking `mx.async_eval` boundaries in both RoFormer chunking and Demucs segment batches, keeping Apple Silicon GPU execution fully saturated without host stalling.
+- Demucs overlap-add evaluates once per segment batch on shorter tracks and after each segment update from nine offsets at the default batch size.
+- Embedded `demucs-mlx` CLI now uses two concurrent asynchronous stem writers by default.
+- Modernized core dependencies: MLX >= 0.32.3, `mlx-audio-io` >= 1.3.21, and `mlx-spectro` >= 0.9.9.
+- Pruned obsolete optimization experiment notebooks from `docs/` and consolidated hardware tuning, runtime flags, and best practices into `docs/tuning.md`.
+
+### Fixed
+
+- Replaced legacy Python slice accumulation loops across Demucs, MDX, MDXC, and RoFormer overlap-add engines with MLX's native in-place accumulation (`array.at[...].add(...)`), avoiding intermediate buffer allocations and improving kernel fusion.
+- Audio pipeline now yields pure zero-copy MLX arrays directly to `mlx-audio-io` with native `channels_first` layout, eliminating unnecessary intermediate NumPy buffer allocations and conversions.
 
 ## 0.1.18 - 2026-09-28
 
