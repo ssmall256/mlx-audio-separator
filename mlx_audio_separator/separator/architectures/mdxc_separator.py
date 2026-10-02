@@ -13,17 +13,6 @@ from mlx_audio_separator.separator.common_separator import CommonSeparator, matc
 from mlx_audio_separator.separator.models.roformer.overlap_add_kernels import OverlapAddFusionCache
 from mlx_audio_separator.utils.performance import apply_experimental_env
 
-# MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
-# Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
-# `arr.at[..., a:b].add(x)` silently accumulates into aliased cells. Fixed in
-# MLX 0.32.0 (backend/metal/kernels/indexing/scatter.h). `mx.slice_update` with
-# an mx.array start takes the DynamicSliceUpdate path and is correct on every
-# supported version, so it is used unconditionally. Set
-# MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1 to benchmark the legacy path.
-_USE_SAFE_SLICE_ACCUMULATION = os.getenv(
-    "MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD", ""
-).strip().lower() not in {"1", "true", "yes", "on"}
-
 
 class MDXCSeparator(CommonSeparator):
     """
@@ -323,23 +312,8 @@ class MDXCSeparator(CommonSeparator):
                 counter = mx.zeros((total_samples,), dtype=mx.float32)
                 for chunk_idx, write_start in enumerate(starts_arr.tolist()):
                     write_end = int(write_start) + int(safe_len)
-                    if _USE_SAFE_SLICE_ACCUMULATION:
-                        start = mx.array([int(write_start)])
-                        result = mx.slice_update(
-                            result,
-                            result[:, :, int(write_start) : write_end] + weighted[chunk_idx],
-                            start,
-                            axes=(2,),
-                        )
-                        counter = mx.slice_update(
-                            counter,
-                            counter[int(write_start) : write_end] + window_safe,
-                            start,
-                            axes=(0,),
-                        )
-                    else:
-                        result = result.at[:, :, int(write_start) : write_end].add(weighted[chunk_idx])
-                        counter = counter.at[int(write_start) : write_end].add(window_safe)
+                    result = result.at[:, :, int(write_start) : write_end].add(weighted[chunk_idx])
+                    counter = counter.at[int(write_start) : write_end].add(window_safe)
                 return result / mx.maximum(counter[None, None, :], mx.array(1e-10, dtype=mx.float32))
 
             compiled_demix = compile_fn(_demix_fn, shapeless=use_shapeless)
@@ -544,23 +518,8 @@ class MDXCSeparator(CommonSeparator):
                 use_compiled=use_fused_ola,
             )
 
-            if _USE_SAFE_SLICE_ACCUMULATION:
-                start = mx.array([span_start])
-                result_mx = mx.slice_update(
-                    result_mx,
-                    result_mx[:, :, span_start:span_end] + span_result,
-                    start,
-                    axes=(2,),
-                )
-                counter_mx = mx.slice_update(
-                    counter_mx,
-                    counter_mx[span_start:span_end] + span_counter,
-                    start,
-                    axes=(0,),
-                )
-            else:
-                result_mx = result_mx.at[:, :, span_start:span_end].add(span_result)
-                counter_mx = counter_mx.at[span_start:span_end].add(span_counter)
+            result_mx = result_mx.at[:, :, span_start:span_end].add(span_result)
+            counter_mx = counter_mx.at[span_start:span_end].add(span_counter)
             pending_updates += 1
 
             if pending_updates >= eval_flush_interval:
@@ -651,23 +610,8 @@ class MDXCSeparator(CommonSeparator):
             safe_len = min(mix.shape[1], x.shape[-1], window_mx.shape[0])
             if safe_len > 0:
                 weighted_chunk = x[..., :safe_len] * window_mx[:safe_len]
-                start = mx.array([0])
-                if _USE_SAFE_SLICE_ACCUMULATION:
-                    result = mx.slice_update(
-                        result,
-                        result[..., :safe_len] + weighted_chunk,
-                        start,
-                        axes=(2,),
-                    )
-                    counter = mx.slice_update(
-                        counter,
-                        counter[..., :safe_len] + window_mx[:safe_len],
-                        start,
-                        axes=(2,),
-                    )
-                else:
-                    result = result.at[..., :safe_len].add(weighted_chunk)
-                    counter = counter.at[..., :safe_len].add(window_mx[:safe_len])
+                result = result.at[..., :safe_len].add(weighted_chunk)
+                counter = counter.at[..., :safe_len].add(window_mx[:safe_len])
 
             inferenced_outputs = result / mx.maximum(counter, mx.array(1e-10))
             inferenced_outputs_np = np.array(inferenced_outputs, dtype=np.float32, copy=False)
@@ -798,23 +742,8 @@ class MDXCSeparator(CommonSeparator):
                             channels=int(mix.shape[0]),
                             use_compiled=bool(getattr(self, "experimental_roformer_fused_overlap_add", False)),
                         )
-                        if _USE_SAFE_SLICE_ACCUMULATION:
-                            start = mx.array([span_start])
-                            result = mx.slice_update(
-                                result,
-                                result[..., span_start:span_end] + span_result,
-                                start,
-                                axes=(2,),
-                            )
-                            counter = mx.slice_update(
-                                counter,
-                                counter[..., span_start:span_end] + span_counter,
-                                start,
-                                axes=(2,),
-                            )
-                        else:
-                            result = result.at[..., span_start:span_end].add(span_result)
-                            counter = counter.at[..., span_start:span_end].add(span_counter)
+                        result = result.at[..., span_start:span_end].add(span_result)
+                        counter = counter.at[..., span_start:span_end].add(span_counter)
                         pending_updates += 1
 
                     maybe_eval()

@@ -9,17 +9,6 @@ from typing import Any
 
 import mlx.core as mx
 
-# MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
-# Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
-# `arr.at[..., a:b].add(x)` silently accumulates into aliased cells. Fixed in
-# MLX 0.32.0 (backend/metal/kernels/indexing/scatter.h). `mx.slice_update` with
-# an mx.array start takes the DynamicSliceUpdate path and is correct on every
-# supported version, so it is used unconditionally. Set
-# MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1 to benchmark the legacy path.
-_USE_SAFE_SLICE_ACCUMULATION = os.getenv(
-    "MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD", ""
-).strip().lower() not in {"1", "true", "yes", "on"}
-
 
 def _overlap_add_simd_tuning_enabled() -> bool:
     flag = os.environ.get("MLX_AUDIO_SEPARATOR_ROFORMER_OLA_SIMD_TUNING", "")
@@ -100,23 +89,8 @@ def _accumulate_span_python(
     for local_idx, rel_start in enumerate(rel_starts):
         write_start = int(rel_start)
         write_end = write_start + int(safe_len)
-        if _USE_SAFE_SLICE_ACCUMULATION:
-            start = mx.array([write_start])
-            span_result = mx.slice_update(
-                span_result,
-                span_result[:, :, write_start:write_end] + weighted[local_idx],
-                start,
-                axes=(2,),
-            )
-            span_counter = mx.slice_update(
-                span_counter,
-                span_counter[write_start:write_end] + window_safe,
-                start,
-                axes=(0,),
-            )
-        else:
-            span_result = span_result.at[:, :, write_start:write_end].add(weighted[local_idx])
-            span_counter = span_counter.at[write_start:write_end].add(window_safe)
+        span_result = span_result.at[:, :, write_start:write_end].add(weighted[local_idx])
+        span_counter = span_counter.at[write_start:write_end].add(window_safe)
     return span_result, span_counter
 
 
@@ -292,23 +266,8 @@ class OverlapAddFusionCache:
                 for local_idx, rel_start in enumerate(rel_const):
                     write_start = int(rel_start)
                     write_end = write_start + int(safe_len)
-                    if _USE_SAFE_SLICE_ACCUMULATION:
-                        start = mx.array([write_start])
-                        span_result = mx.slice_update(
-                            span_result,
-                            span_result[:, :, write_start:write_end] + weighted_in[local_idx],
-                            start,
-                            axes=(2,),
-                        )
-                        span_counter = mx.slice_update(
-                            span_counter,
-                            span_counter[write_start:write_end] + window_in,
-                            start,
-                            axes=(0,),
-                        )
-                    else:
-                        span_result = span_result.at[:, :, write_start:write_end].add(weighted_in[local_idx])
-                        span_counter = span_counter.at[write_start:write_end].add(window_in)
+                    span_result = span_result.at[:, :, write_start:write_end].add(weighted_in[local_idx])
+                    span_counter = span_counter.at[write_start:write_end].add(window_in)
                 return span_result, span_counter
 
             try:

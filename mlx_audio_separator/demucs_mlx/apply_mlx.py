@@ -15,16 +15,7 @@ from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from .mlx_utils import center_trim
 
 _WEIGHT_CACHE: dict[tuple[int, float, str], mx.array] = {}
-# MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
-# Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
-# `arr.at[..., a:b].add(x)` silently accumulates into aliased cells. Fixed in
-# MLX 0.32.0 (backend/metal/kernels/indexing/scatter.h). `mx.slice_update` with
-# an mx.array start takes the DynamicSliceUpdate path and is correct on every
-# supported version, so it is used unconditionally. Set
-# MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1 to benchmark the legacy path.
-_USE_SAFE_SLICE_ACCUMULATION = os.getenv(
-    "MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD", ""
-).strip().lower() not in {"1", "true", "yes", "on"}
+
 
 
 def _deterministic_accumulation_enabled() -> bool:
@@ -350,23 +341,8 @@ def apply_model(
                 end = offset + segment_length
 
                 update = weight_view * chunk_out
-                if _USE_SAFE_SLICE_ACCUMULATION:
-                    start = mx.array([offset])
-                    out = mx.slice_update(
-                        out,
-                        out[:, :, :, offset:end] + update,
-                        start,
-                        axes=(3,),
-                    )
-                    sum_weight = mx.slice_update(
-                        sum_weight,
-                        sum_weight[offset:end] + weight,
-                        start,
-                        axes=(0,),
-                    )
-                else:
-                    out = out.at[:, :, :, offset:end].add(update)
-                    sum_weight = sum_weight.at[offset:end].add(weight)
+                out = out.at[:, :, :, offset:end].add(update)
+                sum_weight = sum_weight.at[offset:end].add(weight)
                 if eval_per_update:
                     mx.eval(out, sum_weight)
 
@@ -410,23 +386,8 @@ def apply_model(
                     weight_slice = weight[:this_chunk_len]
                     w = weight_slice.reshape(1, 1, 1, -1)
                     update = w * chunk_out
-                    if _USE_SAFE_SLICE_ACCUMULATION:
-                        start = mx.array([offset])
-                        out = mx.slice_update(
-                            out,
-                            out[:, :, :, offset:end] + update,
-                            start,
-                            axes=(3,),
-                        )
-                        sum_weight = mx.slice_update(
-                            sum_weight,
-                            sum_weight[offset:end] + weight_slice,
-                            start,
-                            axes=(0,),
-                        )
-                    else:
-                        out = out.at[:, :, :, offset:end].add(update)
-                        sum_weight = sum_weight.at[offset:end].add(weight_slice)
+                    out = out.at[:, :, :, offset:end].add(update)
+                    sum_weight = sum_weight.at[offset:end].add(weight_slice)
                     mx.eval(out, sum_weight)
                     if progress_bar is not None:
                         progress_bar.update(1)

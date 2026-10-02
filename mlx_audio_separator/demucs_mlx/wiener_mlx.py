@@ -8,17 +8,6 @@ import os
 
 import mlx.core as mx
 
-# MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
-# Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
-# `arr.at[..., a:b].add(x)` silently accumulates into aliased cells. Fixed in
-# MLX 0.32.0 (backend/metal/kernels/indexing/scatter.h). `mx.slice_update` with
-# an mx.array start takes the DynamicSliceUpdate path and is correct on every
-# supported version, so it is used unconditionally. Set
-# MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1 to benchmark the legacy path.
-_USE_SAFE_SLICE_ACCUMULATION = os.getenv(
-    "MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD", ""
-).strip().lower() not in {"1", "true", "yes", "on"}
-
 
 def _to_complex(x: mx.array) -> mx.array:
     """Convert (..., 2) real/imag tensor to native complex64."""
@@ -267,23 +256,8 @@ def expectation_maximization(
                 y_batch = _apply_wiener_batch(x_slice, v_slice, R, eps)
                 real_update = mx.real(y_batch).astype(mx.float32)
                 imag_update = mx.imag(y_batch).astype(mx.float32)
-                if _USE_SAFE_SLICE_ACCUMULATION:
-                    start = mx.array([pos])
-                    y_next_real = mx.slice_update(
-                        y_next_real,
-                        y_next_real[pos:end_pos] + real_update,
-                        start,
-                        axes=(0,),
-                    )
-                    y_next_imag = mx.slice_update(
-                        y_next_imag,
-                        y_next_imag[pos:end_pos] + imag_update,
-                        start,
-                        axes=(0,),
-                    )
-                else:
-                    y_next_real = y_next_real.at[pos:end_pos].add(real_update)
-                    y_next_imag = y_next_imag.at[pos:end_pos].add(imag_update)
+                y_next_real = y_next_real.at[pos:end_pos].add(real_update)
+                y_next_imag = y_next_imag.at[pos:end_pos].add(imag_update)
             y = y_next_real.astype(mx.complex64) + 1j * y_next_imag.astype(mx.complex64)
         else:
             y_new_list = []

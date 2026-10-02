@@ -28,17 +28,6 @@ from .bs_roformer import (
     unpack,
 )
 
-# MLX < 0.32.0 corrupts strided (non-leading-axis) slice scatter-add: the
-# Metal slice_update kernel linearizes a 2-D/3-D dispatch grid incorrectly, so
-# `arr.at[..., a:b].add(x)` silently accumulates into aliased cells. Fixed in
-# MLX 0.32.0 (backend/metal/kernels/indexing/scatter.h). `mx.slice_update` with
-# an mx.array start takes the DynamicSliceUpdate path and is correct on every
-# supported version, so it is used unconditionally. Set
-# MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD=1 to benchmark the legacy path.
-_USE_SAFE_SLICE_ACCUMULATION = os.getenv(
-    "MLX_AUDIO_SEPARATOR_UNSAFE_SLICE_ADD", ""
-).strip().lower() not in {"1", "true", "yes", "on"}
-
 
 def _hz_to_mel(freq: np.ndarray, htk: bool = False) -> np.ndarray:
     """Convert Hz to mel scale."""
@@ -490,46 +479,16 @@ class MelBandRoformerMLX(nn.Module):
                     start = starts[hop]
                     end = start + chunk_len
                     out_update = batch_out[j] * w_view_single
-                    if _USE_SAFE_SLICE_ACCUMULATION:
-                        start_mx = mx.array([start])
-                        out_acc = mx.slice_update(
-                            out_acc,
-                            out_acc[..., start:end] + out_update,
-                            start_mx,
-                            axes=(out_acc.ndim - 1,),
-                        )
-                        w_acc = mx.slice_update(
-                            w_acc,
-                            w_acc[..., start:end] + w_view_single,
-                            start_mx,
-                            axes=(w_acc.ndim - 1,),
-                        )
-                    else:
-                        out_acc = out_acc.at[..., start:end].add(out_update)
-                        w_acc = w_acc.at[..., start:end].add(w_view_single)
+                    out_acc = out_acc.at[..., start:end].add(out_update)
+                    w_acc = w_acc.at[..., start:end].add(w_view_single)
             else:
                 batch_out = batch_out.reshape(H, B, self.num_stems, C, chunk_len)
                 for j, hop in enumerate(hops):
                     start = starts[hop]
                     end = start + chunk_len
                     out_update = batch_out[j] * w_view_multi
-                    if _USE_SAFE_SLICE_ACCUMULATION:
-                        start_mx = mx.array([start])
-                        out_acc = mx.slice_update(
-                            out_acc,
-                            out_acc[..., start:end] + out_update,
-                            start_mx,
-                            axes=(out_acc.ndim - 1,),
-                        )
-                        w_acc = mx.slice_update(
-                            w_acc,
-                            w_acc[..., start:end] + w_view_multi,
-                            start_mx,
-                            axes=(w_acc.ndim - 1,),
-                        )
-                    else:
-                        out_acc = out_acc.at[..., start:end].add(out_update)
-                        w_acc = w_acc.at[..., start:end].add(w_view_multi)
+                    out_acc = out_acc.at[..., start:end].add(out_update)
+                    w_acc = w_acc.at[..., start:end].add(w_view_multi)
 
             pending_updates += H
             if pending_updates >= eval_flush_interval:
