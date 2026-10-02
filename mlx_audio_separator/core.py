@@ -78,7 +78,7 @@ class Separator:
         auto_tune_batch: False
         tune_probe_seconds: 8.0
         cache_clear_policy: "deferred" (default) | "aggressive"
-        write_workers: 2
+        write_workers: 4
         perf_trace: False
         perf_trace_path: None
         save_converted_safetensors: False
@@ -283,9 +283,11 @@ class Separator:
 
         system_info = platform.uname()
         self.logger.info(f"System: {system_info.system} {system_info.machine} Python: {platform.python_version()}")
-        self.check_ffmpeg_installed()
+        # No FFmpeg check: audio I/O goes through mlx-audio-io (AudioToolbox on
+        # macOS), so FFmpeg is not needed, and probing for it cost ~50 ms a run.
 
     def check_ffmpeg_installed(self):
+        """Log the FFmpeg version. Kept for API compatibility; nothing here needs FFmpeg."""
         try:
             ffmpeg_version_output = subprocess.check_output(["ffmpeg", "-version"], text=True)
             first_line = ffmpeg_version_output.splitlines()[0]

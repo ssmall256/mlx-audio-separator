@@ -146,7 +146,7 @@ remain for benchmarking or exact-parity work.
 Release-facing stable controls:
 
 - `--cache_clear_policy {aggressive,deferred}` — defaults to `deferred`
-- `--write_workers <int>` — defaults to `2`
+- `--write_workers <int>` — defaults to `4`
 
 Both already ship at the value that measured fastest, so the example that used
 to live here (passing them explicitly) is no longer needed.

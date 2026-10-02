@@ -153,11 +153,11 @@ def test_cli_exposes_precision_and_seed():
 
 
 def test_io_policy_defaults_to_the_measured_optimum():
-    """deferred + 2 writers: ~6-17% faster, bit-identical output, +70 MB RSS."""
+    """deferred + 4 writers: bit-identical output; 4 writers halve FLAC encoding time against 2."""
     from mlx_audio_separator.utils.performance import DEFAULT_PERFORMANCE_PARAMS
 
     assert DEFAULT_PERFORMANCE_PARAMS["cache_clear_policy"] == "deferred"
-    assert DEFAULT_PERFORMANCE_PARAMS["write_workers"] == 2
+    assert DEFAULT_PERFORMANCE_PARAMS["write_workers"] == 4
 
 
 def test_library_does_not_touch_global_warning_filters(tmp_path, monkeypatch):

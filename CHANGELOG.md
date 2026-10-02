@@ -12,6 +12,14 @@ All notable changes to this project are documented in this file.
   works with any MLX from 0.32.0 on without a rebuild, and its loads are about
   15% faster. Output is unchanged. The README's rebuild instructions for an MLX
   version mismatch are replaced by upgrading `mlx-audio-io`.
+- `--write_workers` (and the `write_workers` performance default) is now 4
+  (was 2). FLAC output got 11-16% faster end to end on a 3:15 track (M4 Pro,
+  M4 Max); WAV is unaffected.
+- Startup no longer runs `ffmpeg -version`: nothing in this package uses
+  FFmpeg, so the probe cost ~50 ms per run and refused to start on Macs
+  without FFmpeg installed. `check_ffmpeg_installed()` remains for callers.
+- Demucs hardware detection reads sysctl and the GPU core count in-process
+  (sysctlbyname, IOKit) instead of spawning four subprocesses (~25 ms).
 
 ## 0.1.19 - 2026-10-02
 

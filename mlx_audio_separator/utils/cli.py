@@ -156,7 +156,7 @@ def main():
         default="deferred",
         help="Cache clear policy (default: %(default)s).",
     )
-    common_params.add_argument("--write_workers", type=int, default=2, help="Concurrent stem writer workers (default: %(default)s).")
+    common_params.add_argument("--write_workers", type=int, default=4, help="Concurrent stem writer workers (default: %(default)s).")
     common_params.add_argument(
         "--experimental_vectorized_chunking",
         action="store_true",

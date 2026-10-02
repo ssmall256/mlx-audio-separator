@@ -16,10 +16,10 @@ class TestPerformanceParams:
         assert perf["speed_mode"] == "default"
         assert perf["auto_tune_batch"] is False
         assert perf["tune_probe_seconds"] == 8.0
-        # Deferred clearing + two writer threads: ~6-17% faster end to end
-        # with bit-identical output, for ~70 MB more peak RSS.
+        # Deferred clearing + four writer threads: bit-identical output; FLAC
+        # encoding of 4 stems takes half as long as with two.
         assert perf["cache_clear_policy"] == "deferred"
-        assert perf["write_workers"] == 2
+        assert perf["write_workers"] == 4
         assert perf["experimental_vectorized_chunking"] is False
         assert perf["experimental_roformer_fast_norm"] is False
         assert perf["experimental_roformer_grouped_band_split"] is False
