@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import numpy as np
+from mlx.utils import tree_flatten
 
 from .convtdfnet import ConvTDFNet
 
@@ -617,8 +618,8 @@ def load_mdx_model(
         weights = mx.load(safetensors_path)
         # Infer params from safetensors keys
         _override_mdx_params_from_weights(model_data, weights)
-        model = create_mdx_model(model_data)
-        model.load_weights(list(weights.items()), strict=False)
+        model = create_mdx_model({**model_data, "bias": _has_tdf_bias(weights)})
+        _load_mdx_weights(model, weights, safetensors_path)
         model.eval()
         return model, model_data
 
@@ -636,9 +637,6 @@ def load_mdx_model(
             if key not in model_data:
                 model_data[key] = value
                 logger.info(f"Using inferred {key}={value}")
-
-        # Create model with correct params
-        model = create_mdx_model(model_data)
 
         # Get architecture params for weight mapping
         params = dict(MDX_DEFAULT_PARAMS)
@@ -672,7 +670,10 @@ def load_mdx_model(
                 "Unsupported MDX ONNX weight schema: no compatible weights were mapped "
                 f"for {os.path.basename(model_path)}."
             )
-        model.load_weights(list(mlx_weights.items()), strict=False)
+        # Build the TDF linears with a bias only when the export has one; UVR's
+        # ONNX exports feed the MatMul straight into BatchNorm.
+        model = create_mdx_model({**model_data, "bias": _has_tdf_bias(mlx_weights)})
+        _load_mdx_weights(model, mlx_weights, model_path)
 
         # Optionally save safetensors for future use
         if os.environ.get("MLX_SAVE_SAFETENSORS") == "1":
@@ -686,6 +687,32 @@ def load_mdx_model(
         return model, model_data
 
     raise ValueError(f"Unsupported model format: {model_path}")
+
+
+def _has_tdf_bias(weights: Dict[str, mx.array]) -> bool:
+    """Whether the checkpoint gives its TDF linears a bias."""
+    return any(name.endswith((".tdf_linear1.bias", ".tdf_linear2.bias")) for name in weights)
+
+
+def _load_mdx_weights(model: ConvTDFNet, weights: Dict[str, mx.array], source: str) -> None:
+    """Load converted weights, warning about any parameter the checkpoint did not supply.
+
+    A parameter the conversion did not map keeps its untrained initial value
+    (random for linear and convolution weights), so the output is wrong.
+    """
+    model.load_weights(list(weights.items()), strict=False)
+    expected = [name for name, _ in tree_flatten(model.parameters())]
+    missing = [name for name in expected if name not in weights]
+    if missing:
+        logger.warning(
+            "%s: %d of %d MDX parameters were not found in the checkpoint and keep "
+            "untrained initial values, so this model's output is wrong "
+            "(first missing: %s).",
+            os.path.basename(source),
+            len(missing),
+            len(expected),
+            ", ".join(missing[:3]),
+        )
 
 
 def _override_mdx_params_from_weights(

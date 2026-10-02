@@ -319,6 +319,56 @@ class TestMDXWeightConversion:
         assert params["bn"] == 4
 
 
+class TestMDXModelLoading:
+    """A loaded MDX model holds exactly the checkpoint's parameters."""
+
+    MODEL_DATA = {"mdx_dim_f_set": 64, "mdx_dim_t_set": 3, "mdx_n_fft_scale_set": 126,
+                  "num_blocks": 5, "l": 1, "g": 8, "bn": 4}
+
+    def _checkpoint(self, tmp_path, drop):
+        import mlx.core as mx
+        from mlx.utils import tree_flatten
+
+        from mlx_audio_separator.separator.models.mdx.loader import create_mdx_model
+
+        mx.random.seed(1)
+        weights = {k: v for k, v in tree_flatten(create_mdx_model(dict(self.MODEL_DATA)).parameters()) if not drop(k)}
+        (tmp_path / "model.onnx").write_bytes(b"")
+        mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+        return str(tmp_path / "model.onnx")
+
+    def _load_twice(self, path):
+        import mlx.core as mx
+
+        from mlx_audio_separator.separator.models.mdx.loader import load_mdx_model
+
+        x = mx.random.normal((1, 4, 64, 8), key=mx.random.key(0))
+        outputs = []
+        for seed in (2, 3):
+            mx.random.seed(seed)
+            model, _ = load_mdx_model(path, dict(self.MODEL_DATA))
+            outputs.append(model(x))
+        return model, outputs
+
+    def test_export_without_tdf_bias_builds_bias_free_linears(self, tmp_path, caplog):
+        import mlx.core as mx
+        from mlx.utils import tree_flatten
+
+        # UVR's ONNX exports feed each TDF MatMul straight into BatchNorm.
+        path = self._checkpoint(tmp_path, drop=lambda k: ".tdf_linear" in k and k.endswith(".bias"))
+        with caplog.at_level("WARNING"):
+            model, (first, second) = self._load_twice(path)
+        assert not [k for k, _ in tree_flatten(model.parameters()) if ".tdf_linear" in k and k.endswith(".bias")]
+        assert mx.array_equal(first, second).item()
+        assert "were not found in the checkpoint" not in caplog.text
+
+    def test_unmapped_parameters_are_reported(self, tmp_path, caplog):
+        path = self._checkpoint(tmp_path, drop=lambda k: k.startswith("enc_0.tdf_linear1."))
+        with caplog.at_level("WARNING"):
+            self._load_twice(path)
+        assert "2 of" in caplog.text and "enc_0.tdf_linear1.bias" in caplog.text
+
+
 class TestDetectModelType:
     """Test detect_model_type from Roformer loader."""
 
