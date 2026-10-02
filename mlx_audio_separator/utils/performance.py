@@ -12,7 +12,6 @@ from statistics import median
 from typing import Any
 
 import mlx.core as mx
-import numpy as np
 
 DEFAULT_PERFORMANCE_PARAMS = {
     "speed_mode": "default",
@@ -199,23 +198,49 @@ def select_best_candidate(timings_by_candidate: dict[int, list[float]], tie_rati
 
 
 @dataclass
-class _SaveTask:
+class SaveTask:
     stem_path: str
-    stem_source: Any
+    stem_source: mx.array
     sample_rate: int
+    layout: str
     encoding: str
     bitrate: str
-    flac_fast_write: bool = False
+    flac_compression: str | None = None
+
+
+def save_stem(task: SaveTask) -> None:
+    """Write one stem with mlx-audio-io.
+
+    ``flac_compression`` is passed only for FLAC output, and dropped when the
+    installed mlx-audio-io does not accept it.
+    """
+    import mlx_audio_io as mac
+
+    kwargs = {"layout": task.layout, "encoding": task.encoding, "bitrate": task.bitrate}
+    if task.flac_compression is not None:
+        kwargs["flac_compression"] = task.flac_compression
+    try:
+        mac.save(task.stem_path, task.stem_source, task.sample_rate, **kwargs)
+    except TypeError:
+        if "flac_compression" not in kwargs:
+            raise
+        del kwargs["flac_compression"]
+        mac.save(task.stem_path, task.stem_source, task.sample_rate, **kwargs)
 
 
 class AsyncStemWriter:
-    """Concurrent audio writer used by separators when write_workers > 1."""
+    """Concurrent audio writer used by separators when write_workers > 1.
+
+    Arrays must be evaluated before they are submitted: MLX streams belong to
+    the thread that created them, so a writer thread cannot evaluate a lazy
+    graph built elsewhere. ``submit`` does this.
+    """
 
     def __init__(self, workers: int = 2):
         if workers <= 0:
             raise ValueError("workers must be >= 1")
         self._workers = int(workers)
-        self._queue: "queue.Queue[_SaveTask | None]" = queue.Queue(maxsize=max(4, workers * 2))
+        self._queue: "queue.Queue[SaveTask | None]" = queue.Queue(maxsize=max(4, workers * 2))
         self._error: BaseException | None = None
         self._threads = [
             threading.Thread(target=self._run, daemon=True, name=f"stem-writer-{idx}")
@@ -225,73 +250,55 @@ class AsyncStemWriter:
             thread.start()
 
     def _run(self):
-        import mlx_audio_io as mac
-
         while True:
             task = self._queue.get()
             try:
                 if task is None:
-                    self._queue.task_done()
                     return
-                save_source = task.stem_source
-                if isinstance(save_source, mx.array):
-                    mx.eval(save_source)
-                mac.save(
-                    str(task.stem_path),
-                    save_source,
-                    task.sample_rate,
-                    encoding=task.encoding,
-                    bitrate=task.bitrate,
-                    flac_compression=("fast" if task.flac_fast_write else "default"),
-                )
-            except TypeError:
-                # Backward-compatible fallback for mlx-audio-io versions without flac_compression.
-                save_source = task.stem_source
-                if isinstance(save_source, mx.array):
-                    mx.eval(save_source)
-                mac.save(
-                    str(task.stem_path),
-                    save_source,
-                    task.sample_rate,
-                    encoding=task.encoding,
-                    bitrate=task.bitrate,
-                )
+                if self._error is None:
+                    save_stem(task)
             except BaseException as exc:
-                self._error = exc
+                # Record every failure, including one from the fallback save, so
+                # flush() reports it; the thread stays alive to drain the queue.
+                if self._error is None:
+                    self._error = exc
             finally:
-                if task is not None:
-                    self._queue.task_done()
+                self._queue.task_done()
 
     def submit(
         self,
         stem_path: str,
-        stem_source: Any,
+        stem_source: mx.array,
         sample_rate: int,
+        layout: str,
         encoding: str,
         bitrate: str,
-        flac_fast_write: bool = False,
+        flac_compression: str | None = None,
     ):
         if self._error is not None:
-            raise self._error
-        if isinstance(stem_source, mx.array):
-            mx.eval(stem_source)
-            source_payload = stem_source
-        else:
-            source_payload = np.ascontiguousarray(stem_source)
-        task = _SaveTask(
-            stem_path=stem_path,
-            stem_source=source_payload,
-            sample_rate=int(sample_rate),
-            encoding=str(encoding),
-            bitrate=str(bitrate),
-            flac_fast_write=bool(flac_fast_write),
+            self._raise_pending()
+        mx.eval(stem_source)
+        self._queue.put(
+            SaveTask(
+                stem_path=str(stem_path),
+                stem_source=stem_source,
+                sample_rate=int(sample_rate),
+                layout=str(layout),
+                encoding=str(encoding),
+                bitrate=str(bitrate),
+                flac_compression=flac_compression,
+            )
         )
-        self._queue.put(task)
+
+    def _raise_pending(self):
+        error, self._error = self._error, None
+        raise error
 
     def flush(self):
+        """Wait for queued writes; raise the first failure once, then reset."""
         self._queue.join()
         if self._error is not None:
-            raise self._error
+            self._raise_pending()
 
     def close(self):
         for _ in range(self._workers):
@@ -300,7 +307,7 @@ class AsyncStemWriter:
         for thread in self._threads:
             thread.join()
         if self._error is not None:
-            raise self._error
+            self._raise_pending()
 
 
 def apply_experimental_env(

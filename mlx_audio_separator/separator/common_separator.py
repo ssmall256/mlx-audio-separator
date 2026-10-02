@@ -8,24 +8,32 @@ from logging import Logger
 
 import mlx.core as mx
 import mlx_audio_io as mac
-import numpy as np
 
-from mlx_audio_separator.utils.performance import AsyncStemWriter, clear_mlx_cache
+from mlx_audio_separator.utils.performance import AsyncStemWriter, SaveTask, clear_mlx_cache, save_stem
+
+
+def scale_to_peak(wave: mx.array, max_peak=1.0, min_peak=None) -> tuple[mx.array, float]:
+    """Scale an MLX waveform down to ``max_peak`` or up to ``min_peak``.
+
+    Returns the scaled waveform and its resulting peak. A silent waveform is
+    left as it is rather than divided by zero.
+    """
+    peak = float(mx.max(mx.abs(wave)).item())
+    if peak > max_peak:
+        return wave * (max_peak / peak), float(max_peak)
+    if min_peak is not None and 0.0 < peak < min_peak:
+        return wave * (min_peak / peak), float(min_peak)
+    return wave, peak
 
 
 def normalize(wave, max_peak=1.0, min_peak=None):
     """Normalize (or amplify) audio waveform to a specified peak value."""
     if isinstance(wave, mx.array):
-        maxv = float(mx.max(mx.abs(wave)).item())
-        if maxv > max_peak:
-            wave = wave * (max_peak / maxv)
-        elif min_peak is not None and maxv < min_peak:
-            wave = wave * (min_peak / maxv)
-        return wave
-    maxv = float(np.abs(wave).max())
+        return scale_to_peak(wave, max_peak, min_peak)[0]
+    maxv = float(abs(wave).max())
     if maxv > max_peak:
         wave *= max_peak / maxv
-    elif min_peak is not None and maxv < min_peak:
+    elif min_peak is not None and 0.0 < maxv < min_peak:
         wave *= min_peak / maxv
     return wave
 
@@ -40,6 +48,8 @@ def match_array_shapes(array_1, array_2):
             pad_width = [(0, 0)] * (array_1.ndim - 1) + [(0, padding)]
             array_1 = mx.pad(array_1, pad_width)
         else:
+            import numpy as np
+
             array_1 = np.pad(array_1, [(0, 0)] * (array_1.ndim - 1) + [(0, padding)], "constant")
     return array_1
 
@@ -201,6 +211,9 @@ class CommonSeparator:
 
     def prepare_mix(self, mix):
         """Load and prepare audio mix using mlx-audio-io."""
+        # Only the MDX/MDXC separators use this NumPy path; Demucs never loads NumPy.
+        import numpy as np
+
         audio_path = mix
 
         if not isinstance(mix, np.ndarray):
@@ -251,10 +264,11 @@ class CommonSeparator:
             self.logger.debug("Write suppressed for tuning run.")
             return
 
-        stem_source = normalize(wave=stem_source, max_peak=self.normalization_threshold, min_peak=self.amplification_threshold)
-
-        max_val = float(mx.max(mx.abs(stem_source)).item()) if isinstance(stem_source, mx.array) else float(np.max(np.abs(stem_source)))
-        if max_val < 1e-6:
+        # Write from MLX; any other array is imported without a copy.
+        if not isinstance(stem_source, mx.array):
+            stem_source = mx.asarray(stem_source)
+        stem_source, peak = scale_to_peak(stem_source, self.normalization_threshold, self.amplification_threshold)
+        if peak < 1e-6:
             self.logger.warning("stem_source array is near-silent; writing silent stem to preserve output contract.")
 
         if self.output_dir:
@@ -269,12 +283,15 @@ class CommonSeparator:
             output_encoding = "pcm24"
         self.logger.debug(f"Output encoding: {output_encoding} (input was {self.input_encoding})")
 
-        # stem_source expected shape: (frames, channels) or (channels, frames)
-        # mlx-audio-io expects (frames, channels)
-        if stem_source.ndim == 2:
-            if stem_source.shape[0] == 2 and stem_source.shape[1] > 2:
-                # Looks like (channels, frames), transpose
-                stem_source = stem_source.T
+        # Stems arrive as (channels, frames) or (frames, channels). Tell
+        # mlx-audio-io which, rather than transposing.
+        if stem_source.ndim == 2 and stem_source.shape[0] <= 8 < stem_source.shape[1]:
+            layout = "channels_first"
+        else:
+            layout = "channels_last"
+        # mlx-audio-io 1.3.21 reads raw memory and ignores strides; this copies
+        # only a strided view, never a stem that is already row-major.
+        stem_source = mx.contiguous(stem_source)
 
         # Determine bitrate for lossy formats
         file_format = stem_path.lower().split(".")[-1]
@@ -283,7 +300,9 @@ class CommonSeparator:
             bitrate = self.output_bitrate
         elif file_format == "mp3":
             bitrate = "320k"
-        flac_fast_write = bool(self.experimental_flac_fast_write and file_format == "flac")
+        flac_compression = None
+        if file_format == "flac":
+            flac_compression = "fast" if self.experimental_flac_fast_write else "default"
 
         try:
             if self.write_workers > 1:
@@ -293,26 +312,25 @@ class CommonSeparator:
                     stem_path=str(stem_path),
                     stem_source=stem_source,
                     sample_rate=self.sample_rate,
+                    layout=layout,
                     encoding=output_encoding,
                     bitrate=bitrate,
-                    flac_fast_write=flac_fast_write,
+                    flac_compression=flac_compression,
                 )
             else:
                 t0 = time.perf_counter()
-                save_kwargs = {
-                    "encoding": output_encoding,
-                    "bitrate": bitrate,
-                }
-                if file_format == "flac":
-                    save_kwargs["flac_compression"] = "fast" if flac_fast_write else "default"
-                if isinstance(stem_source, mx.array):
-                    mx.eval(stem_source)
-                try:
-                    mac.save(str(stem_path), stem_source, self.sample_rate, **save_kwargs)
-                except TypeError:
-                    # Backward-compatible fallback for mlx-audio-io versions without flac_compression.
-                    save_kwargs.pop("flac_compression", None)
-                    mac.save(str(stem_path), stem_source, self.sample_rate, **save_kwargs)
+                mx.eval(stem_source)
+                save_stem(
+                    SaveTask(
+                        stem_path=str(stem_path),
+                        stem_source=stem_source,
+                        sample_rate=self.sample_rate,
+                        layout=layout,
+                        encoding=output_encoding,
+                        bitrate=bitrate,
+                        flac_compression=flac_compression,
+                    )
+                )
                 self.add_perf_time("write_s", time.perf_counter() - t0)
             self.logger.debug(f"Exported audio file successfully to {stem_path}")
         except Exception as e:
