@@ -20,6 +20,13 @@ All notable changes to this project are documented in this file.
   without FFmpeg installed. `check_ffmpeg_installed()` remains for callers.
 - Demucs hardware detection reads sysctl and the GPU core count in-process
   (sysctlbyname, IOKit) instead of spawning four subprocesses (~25 ms).
+- Loading a cached model no longer re-hashes its weights on every run (~70 ms
+  saved per run; a Demucs model loads in ~30 ms instead of ~100 ms). After a full
+  SHA-256 check passes, a `.verified.json` stamp next to the weights records the
+  digest with the file's size, mtime, inode, device and ctime; later loads skip
+  the hash only while all of those match, so any write to the file through the
+  filesystem brings the full check back. Safetensors cannot execute code on
+  load, so the digest only guards against corrupted caches.
 
 ## 0.1.19 - 2026-10-02
 
