@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 0.1.20 - 2026-10-02
+
+### Changed
+
+- Requires `mlx-audio-io>=1.3.23`, whose extension no longer links MLX: it
+  works with any MLX from 0.32.0 on without a rebuild, and its loads are about
+  15% faster. Output is unchanged. The README's rebuild instructions for an MLX
+  version mismatch are replaced by upgrading `mlx-audio-io`.
+
 ## 0.1.19 - 2026-10-02
 
 ### Fixed
