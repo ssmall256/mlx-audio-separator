@@ -60,3 +60,6 @@ jobs:
 
       - name: Test restricted Demucs deserialization
         run: pytest -v tests/test_demucs_security.py
+
+      - name: Test Demucs parity with upstream
+        run: pytest -v tests/test_demucs_upstream_parity.py

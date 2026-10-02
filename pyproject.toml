@@ -58,6 +58,17 @@ convert = [
     "onnx>=1.15",
     "demucs>=4.0",
 ]
+# Experimental Neural Engine path for the first HTDemucs waveform convolution
+# (demucs_mlx --ane-time-encoder). Runtime: Core ML via PyObjC.
+ane = [
+    "pyobjc-framework-CoreML>=10; sys_platform == 'darwin'",
+]
+# Converting the Core ML assets (python -m mlx_audio_separator.demucs_mlx.ane convert).
+ane-convert = [
+    "coremltools==9.0; sys_platform == 'darwin'",
+    "demucs>=4.0",
+    "torch>=2.6,<2.8",
+]
 
 [project.scripts]
 mlx-audio-separator = "mlx_audio_separator.utils.cli:main"
@@ -67,6 +78,11 @@ Homepage = "https://github.com/ssmall256/mlx-audio-separator"
 Repository = "https://github.com/ssmall256/mlx-audio-separator"
 Issues = "https://github.com/ssmall256/mlx-audio-separator/issues"
 Changelog = "https://github.com/ssmall256/mlx-audio-separator/blob/main/CHANGELOG.md"
+
+[tool.uv]
+# coremltools 9 needs torch < 2.8; resolve the Core ML converter separately so
+# the ordinary conversion extra keeps current PyTorch.
+conflicts = [[{ extra = "convert" }, { extra = "ane-convert" }]]
 
 [tool.ruff]
 line-length = 140
@@ -85,4 +101,4 @@ include-package-data = true
 include = ["mlx_audio_separator*"]
 
 [tool.setuptools.package-data]
-mlx_audio_separator = ["models.json", "models-scores.json", "model-data.json", "separator/models/vr/modelparams/*.json"]
+mlx_audio_separator = ["models.json", "models-scores.json", "model-data.json", "separator/models/vr/modelparams/*.json", "demucs_mlx/csrc/*.m"]
