@@ -560,11 +560,19 @@ class MDXCSeparator(CommonSeparator):
         else:
             effective_override_model_segment_size = bool(override_model_segment_size)
 
-        # Check if single stem extraction is requested for a multi-stem model
+        # Check if single stem extraction is requested for a multi-stem model. A
+        # target_instrument model outputs only that stem (the rest of
+        # `instruments` is derived from the mix), so it always runs whole.
         target_stem_idx = None
         target_model = getattr(self, "model", None) or getattr(self, "model_run", None)
         single_stem_req = getattr(self, "output_single_stem", None)
-        if single_stem_req and instruments and target_model is not None and hasattr(target_model, "set_target_stem"):
+        if (
+            single_stem_req
+            and instruments
+            and not target_instrument
+            and target_model is not None
+            and hasattr(target_model, "set_target_stem")
+        ):
             single_lower = single_stem_req.strip().lower()
             for idx, inst in enumerate(instruments):
                 if inst.strip().lower() == single_lower:

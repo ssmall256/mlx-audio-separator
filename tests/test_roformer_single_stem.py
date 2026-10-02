@@ -120,18 +120,17 @@ class _NoopLogger:
         return None
 
 
-def test_mdxc_separator_single_stem_demix(monkeypatch):
-    """Verify MDXCSeparator._demix_mlx routes single stem extraction and returns only target stem."""
+def _demix_separator(monkeypatch, num_stems, training):
     from mlx_audio_separator.separator.architectures import mdxc_separator as mdxc_mod
 
     monkeypatch.setattr(mdxc_mod, "tqdm", lambda it, **kwargs: it)
 
-    # 4-stem model
+    mx.random.seed(42)
     model = BSRoformerMLX(
         dim=64,
         depth=1,
         stereo=True,
-        num_stems=4,
+        num_stems=num_stems,
         time_transformer_depth=1,
         freq_transformer_depth=1,
         linear_transformer_depth=0,
@@ -150,9 +149,7 @@ def test_mdxc_separator_single_stem_demix(monkeypatch):
     sep.model_run = model
     sep.model = model
     sep.model_data = {
-        "training": {
-            "instruments": ["drums", "bass", "other", "vocals"]
-        },
+        "training": training,
         "inference": {
             "dim_t": 5,
         },
@@ -180,7 +177,12 @@ def test_mdxc_separator_single_stem_demix(monkeypatch):
 
     t = np.linspace(0, 1.0, 44100, dtype=np.float32)
     tone = (0.2 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
-    mix = np.stack([tone, tone], axis=0)
+    return sep, model, np.stack([tone, tone], axis=0)
+
+
+def test_mdxc_separator_single_stem_demix(monkeypatch):
+    """Verify MDXCSeparator._demix_mlx routes single stem extraction and returns only target stem."""
+    sep, model, mix = _demix_separator(monkeypatch, 4, {"instruments": ["drums", "bass", "other", "vocals"]})
 
     # 1. Full 4-stem separation
     sep.output_single_stem = None
@@ -194,3 +196,20 @@ def test_mdxc_separator_single_stem_demix(monkeypatch):
     assert set(sources_single.keys()) == {"vocals"}
     assert model.target_stem_idx is None  # cleanly reset after inference
     np.testing.assert_allclose(sources_single["vocals"], sources_all["vocals"], rtol=1e-5, atol=1e-5)
+
+
+def test_target_instrument_model_runs_whole_for_any_single_stem(monkeypatch):
+    """A one-output model derives its second stem, so a single-stem request runs the normal path."""
+    # The model's one output is the instrumental; vocals are derived from the mix.
+    training = {"instruments": ["vocals", "instrumental"], "target_instrument": "instrumental"}
+    sep, model, mix = _demix_separator(monkeypatch, 1, training)
+
+    sep.output_single_stem = None
+    full = sep._demix_mlx(mix)
+    for stem in ("instrumental", "vocals", "Vocals"):
+        sep.output_single_stem = stem
+        sources = sep._demix_mlx(mix)
+        assert model.target_stem_idx is None
+        assert sources.keys() == full.keys()
+        for name in full:
+            np.testing.assert_array_equal(sources[name], full[name])
