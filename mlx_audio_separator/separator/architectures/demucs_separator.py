@@ -26,7 +26,13 @@ class DemucsSeparator(CommonSeparator):
         self.shifts = arch_config.get("shifts", DEFAULT_DEMUCS_SHIFTS)
         self.overlap = arch_config.get("overlap", 0.25)
         self.segments_enabled = arch_config.get("segments_enabled", True)
-        self.batch_size = int(arch_config.get("batch_size", DEFAULT_BATCH_SIZE))
+        from mlx_audio_separator.demucs_mlx.hardware import optimal_batch_size
+        raw_batch_size = arch_config.get("batch_size", DEFAULT_BATCH_SIZE)
+        if raw_batch_size is None or str(raw_batch_size).lower() == "auto":
+            self.batch_size = optimal_batch_size()
+        else:
+            self.batch_size = int(raw_batch_size)
+        self.compile = arch_config.get("compile", arch_config.get("demucs_compile", None))
         self.seed = arch_config.get("seed")
         self.experimental_demucs_wiener_preallocate_output = bool(
             self.performance_params.get("experimental_demucs_wiener_preallocate_output", False)
@@ -95,6 +101,7 @@ class DemucsSeparator(CommonSeparator):
                 if self._demucs_model_name == "htdemucs_ft" and self.output_single_stem is not None
                 else None
             ),
+            compile=self.compile,
         )
 
         self.logger.info(
@@ -149,8 +156,18 @@ class DemucsSeparator(CommonSeparator):
 
         # Decode (kept in MLX tensors to avoid host round-trips).
         t0 = time.perf_counter()
-        audio_mx, sr = mac.load(str(audio_file_path), sr=self._demucs_separator.samplerate, dtype="float32")
-        wav_mx = audio_mx.T if audio_mx.ndim == 2 else mx.stack([audio_mx, audio_mx], axis=0)
+        audio_mx, sr = mac.load(
+            str(audio_file_path),
+            sr=self._demucs_separator.samplerate,
+            dtype="float32",
+            layout="channels_first",
+        )
+        if audio_mx.ndim == 1:
+            wav_mx = mx.stack([audio_mx, audio_mx], axis=0)
+        elif audio_mx.ndim == 2 and audio_mx.shape[0] == 1:
+            wav_mx = mx.repeat(audio_mx, 2, axis=0)
+        else:
+            wav_mx = audio_mx
         self.add_perf_time("decode_s", time.perf_counter() - t0)
 
         # Inference.

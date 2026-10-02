@@ -11,71 +11,11 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
+from .defaults import DEFAULT_BATCH_SIZE
 from .mlx_registry import MLX_MODEL_REGISTRY
 
 
-class _AsyncWriter:
-    def __init__(
-        self,
-        maxsize: int = 4,
-        workers: int = 2,
-        *,
-        clip: str = "rescale",
-        bits_per_sample: int = 16,
-        as_float: bool = False,
-    ):
-        if workers <= 0:
-            raise ValueError("workers must be > 0")
-        self._queue: "queue.Queue[tp.Optional[tuple]]" = queue.Queue(maxsize=maxsize)
-        self._error: tp.Optional[BaseException] = None
-        self._workers = int(workers)
-        self._clip = clip
-        self._bits_per_sample = int(bits_per_sample)
-        self._as_float = bool(as_float)
-        self._threads = [
-            threading.Thread(target=self._run, daemon=True, name=f"demucs-writer-{i}")
-            for i in range(self._workers)
-        ]
-        for thread in self._threads:
-            thread.start()
-
-    def _run(self) -> None:
-        from .audio import save_audio
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    self._queue.task_done()
-                    break
-                wav, path, samplerate = item
-                save_audio(
-                    wav,
-                    path,
-                    samplerate=samplerate,
-                    clip=self._clip,
-                    bits_per_sample=self._bits_per_sample,
-                    as_float=self._as_float,
-                )
-            except BaseException as exc:  # propagate after join
-                self._error = exc
-            finally:
-                if item is not None:
-                    self._queue.task_done()
-
-    def submit(self, wav: np.ndarray, path: Path, samplerate: int) -> None:
-        if self._error is not None:
-            raise self._error
-        self._queue.put((wav, path, samplerate))
-
-    def close(self) -> None:
-        for _ in range(self._workers):
-            self._queue.put(None)
-        self._queue.join()
-        for thread in self._threads:
-            thread.join()
-        if self._error is not None:
-            raise self._error
+from .audio import AsyncAudioWriter as _AsyncWriter
 
 def _list_models() -> int:
     for name in sorted(MLX_MODEL_REGISTRY.keys()):
@@ -89,10 +29,11 @@ def _list_models() -> int:
 
 def _load_audio(path: Path, model):
     import mlx.core as mx
-    import mlx_audio_io as mac
 
-    audio_mx, sr = mac.load(str(path), sr=model.samplerate, dtype="float32")
-    wav = audio_mx.T
+    from .audio import load_audio
+
+    audio_mx, sr = load_audio(path, sr=model.samplerate, dtype="float32")
+    wav = audio_mx
     src_channels = wav.shape[0]
     tgt_channels = model.audio_channels
     if src_channels != tgt_channels:
@@ -127,12 +68,17 @@ def _iter_prefetched_audio(
     paths = [Path(track) for track in tracks]
 
     def _producer() -> None:
+        import mlx.core as mx
+
         try:
             for path in paths:
                 if done.is_set():
                     break
                 try:
                     wav = _load_audio(path, model)
+                    # MLX streams are thread-local. Materialize the lazy audio
+                    # graph on its producer thread before handing it off.
+                    mx.eval(wav)
                 except BaseException as exc:
                     q.put((path, None, exc))
                     break
@@ -162,19 +108,23 @@ def _separate_one(
     model,
     out_dir: Path,
     shifts: int,
+    seed: tp.Optional[int],
     overlap: float,
     segment: tp.Optional[float],
     split: bool,
     batch_size: int,
-    seed: tp.Optional[int],
     verbose: bool,
     writer: _AsyncWriter,
+    stem: tp.Optional[str] = None,
+    compile: tp.Optional[bool] = None,
 ) -> None:
     import mlx.core as mx
 
     from .apply_mlx import apply_model
 
-    total_steps = 4 + len(model.sources)
+    source_names = (stem,) if stem is not None else model.sources
+    source_index = model.sources.index(stem) if stem is not None else None
+    total_steps = 4 + len(source_names)
     stage = tqdm(total=total_steps, desc=path.name, unit="step", leave=False) if verbose else None
     try:
         if verbose:
@@ -189,19 +139,21 @@ def _separate_one(
             model,
             mix,
             shifts=shifts,
+            seed=seed,
             split=split,
             overlap=overlap,
             segment=segment,
             batch_size=batch_size,
-            seed=seed,
             progress=verbose,
+            source_index=source_index,
+            compile=compile,
         )
         mx.eval(estimates)
         if stage is not None:
             stage.update(1)
         track_out = out_dir / path.stem
         track_out.mkdir(parents=True, exist_ok=True)
-        stem_paths = [track_out / f"{s}.wav" for s in model.sources]
+        stem_paths = [track_out / f"{s}.wav" for s in source_names]
         if stage is not None:
             stage.update(1)
 
@@ -219,26 +171,74 @@ def _separate_one(
             stage.close()
 
 
-def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="demucs-mlx",
         description="MLX-only Demucs stem separation",
     )
     parser.add_argument("tracks", nargs="*", help="Audio files to separate")
     parser.add_argument("-n", "--name", default="htdemucs", help="Model name")
+    parser.add_argument(
+        "--stem",
+        default=None,
+        help="For htdemucs_ft, compute only this stem (drums, bass, other, or vocals)",
+    )
     parser.add_argument("-o", "--out", default="separated", help="Output directory")
     parser.add_argument("--segment", type=float, default=None, help="Segment length in seconds")
     parser.add_argument("--overlap", type=float, default=0.25, help="Overlap ratio")
-    parser.add_argument("--shifts", type=int, default=DEFAULT_DEMUCS_SHIFTS, help="Number of random shifts")
-    parser.add_argument("--seed", type=int, default=None, help="Optional seed for deterministic shift offsets")
-    parser.add_argument("-b", "--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for inference")
+    parser.add_argument("--shifts", type=int, default=1, help="Number of random shifts")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional RNG seed for reproducible shifts",
+    )
+    def _parse_batch_size(val: str):
+        if str(val).lower() == "auto":
+            return "auto"
+        try:
+            ival = int(val)
+            if ival <= 0:
+                raise argparse.ArgumentTypeError("--batch-size must be > 0")
+            return ival
+        except ValueError:
+            raise argparse.ArgumentTypeError("--batch-size must be an integer or 'auto'")
+
+    parser.add_argument(
+        "-b",
+        "--batch-size",
+        type=_parse_batch_size,
+        default=DEFAULT_BATCH_SIZE,
+        help="Batch size for inference (default: 'auto' based on hardware topology)",
+    )
     parser.add_argument("--write-workers", type=int, default=2,
                         help="Number of concurrent audio writer threads")
     parser.add_argument("--prefetch-tracks", type=int, default=2,
                         help="Number of prefetched decoded tracks")
     parser.add_argument("--no-split", action="store_true", help="Disable chunked inference")
+    parser.add_argument(
+        "--ane-time-encoder", action="store_true",
+        help="run the first HTDemucs waveform convolution on the Neural Engine",
+    )
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Compile repeated forward graph chunks (also controlled by DEMUCS_MLX_COMPILE_FORWARD=1)",
+    )
+    parser.add_argument(
+        "--auto-tune",
+        action="store_true",
+        help="Auto-tune batch size and stream policy based on Apple Silicon topology",
+    )
     parser.add_argument("--list-models", action="store_true", help="List available models")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+
+    return parser
+
+
+def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
+    parser = _build_parser()
 
     args = parser.parse_args(argv)
 
@@ -248,14 +248,19 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
     if not args.tracks:
         parser.print_help(sys.stderr)
         return 2
+    if args.auto_tune or args.batch_size is None or str(args.batch_size).lower() == "auto":
+        from .hardware import optimal_batch_size
+        args.batch_size = optimal_batch_size()
+    elif int(args.batch_size) <= 0:
+        raise SystemExit("--batch-size must be > 0")
+    else:
+        args.batch_size = int(args.batch_size)
     if args.shifts < 0:
         raise SystemExit("--shifts must be >= 0")
     if not (0.0 <= float(args.overlap) < 1.0):
         raise SystemExit("--overlap must be in [0, 1)")
     if args.segment is not None and float(args.segment) <= 0:
         raise SystemExit("--segment must be > 0")
-    if args.batch_size <= 0:
-        raise SystemExit("--batch-size must be > 0")
     if args.write_workers <= 0:
         raise SystemExit("--write-workers must be > 0")
     if args.prefetch_tracks < 0:
@@ -264,6 +269,13 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
     if args.name not in MLX_MODEL_REGISTRY:
         known = ", ".join(sorted(MLX_MODEL_REGISTRY.keys()))
         raise SystemExit(f"Unknown model '{args.name}'. Available: {known}")
+    if args.stem is not None and args.name != "htdemucs_ft":
+        raise SystemExit("--stem acceleration only supports htdemucs_ft")
+    if args.ane_time_encoder:
+        if args.name != "htdemucs":
+            raise SystemExit("--ane-time-encoder only supports the default htdemucs model")
+        if args.no_split or (args.segment is not None and args.segment != 7.8):
+            raise SystemExit("--ane-time-encoder requires split 7.8-second segments")
 
     if args.verbose:
         print(f"Loading MLX model: {args.name}")
@@ -271,6 +283,16 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
     model = get_mlx_model(args.name)
     if hasattr(model, "eval"):
         model.eval()
+    if args.stem is not None and args.stem not in model.sources:
+        raise SystemExit(f"Unknown stem {args.stem!r}; available: {', '.join(model.sources)}")
+    ane_worker = None
+    if args.ane_time_encoder:
+        from .ane import WaveformConv
+
+        if len(model.models) != 1:
+            raise SystemExit("--ane-time-encoder requires a single HTDemucs model")
+        ane_worker = WaveformConv()
+        model.models[0]._ane_time_conv = ane_worker
 
     out_dir = Path(args.out)
     writer = _AsyncWriter(maxsize=max(8, args.write_workers * 4), workers=args.write_workers)
@@ -287,16 +309,28 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
                 model,
                 out_dir,
                 shifts=args.shifts,
+                seed=args.seed,
                 overlap=args.overlap,
                 segment=args.segment,
                 split=not args.no_split,
                 batch_size=args.batch_size,
-                seed=args.seed,
                 verbose=args.verbose,
                 writer=writer,
+                stem=args.stem,
+                compile=args.compile,
             )
     finally:
         writer.close()
+        if ane_worker is not None:
+            ane_worker.close()
+            if args.verbose:
+                print(
+                    "Neural Engine waveform convolution: "
+                    f"{ane_worker.predictions} predictions, "
+                    f"{ane_worker.busy_seconds:.3f}s execution, "
+                    f"{ane_worker.wait_seconds:.3f}s wait, "
+                    f"{ane_worker.transfer_seconds:.3f}s transfer"
+                )
 
     return 0
 

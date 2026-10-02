@@ -343,7 +343,10 @@ class Separator:
             pass
         return f"{arch}|{model_name}|sr={int(sr)}|ch={int(channels)}|device={device}"
 
-    def _set_model_batch_size(self, batch_size: int):
+    def _set_model_batch_size(self, batch_size):
+        if str(batch_size).lower() == "auto":
+            from mlx_audio_separator.demucs_mlx.hardware import optimal_batch_size
+            batch_size = optimal_batch_size()
         batch_size = int(batch_size)
         if self.model_instance is None:
             return
@@ -356,7 +359,7 @@ class Separator:
 
     def _candidate_batch_sizes(self):
         return {
-            "Demucs": [1, 2, 4],
+            "Demucs": [1, 2, 4, 8],
             "MDXC": [1, 2, 4],
             "MDX": [1, 2, 4],
             "VR": [1, 2, 4],

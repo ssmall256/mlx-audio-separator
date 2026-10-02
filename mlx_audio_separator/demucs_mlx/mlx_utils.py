@@ -1,9 +1,44 @@
-from __future__ import annotations
-
+import contextlib
+import contextvars
 import math
+import os
 import typing as tp
 
 import mlx.core as mx
+
+_OUTER_COMPILE_ACTIVE = contextvars.ContextVar("outer_compile_active", default=False)
+
+
+def is_outer_compile_active() -> bool:
+    """Return whether outer forward graph compilation is currently active."""
+    return _OUTER_COMPILE_ACTIVE.get()
+
+
+@contextlib.contextmanager
+def outer_compile_context(active: bool = True):
+    """Context manager setting whether outer forward graph compilation is active."""
+    token = _OUTER_COMPILE_ACTIVE.set(bool(active))
+    try:
+        yield
+    finally:
+        _OUTER_COMPILE_ACTIVE.reset(token)
+
+
+def is_dconv_compile_enabled() -> bool:
+    """Check if DConv layers should compile their internal blocks into separate subgraphs.
+
+    If MLX_AUDIO_SEPARATOR_DEMUCS_DCONV_COMPILE or DEMUCS_MLX_COMPILE_DCONV is explicitly set,
+    that takes precedence. Otherwise, DConv compilation is opt-in and defaults to False.
+    If outer forward compilation is active, DConv compilation is automatically suppressed.
+    """
+    raw = os.getenv("MLX_AUDIO_SEPARATOR_DEMUCS_DCONV_COMPILE")
+    if raw is None:
+        raw = os.getenv("DEMUCS_MLX_COMPILE_DCONV")
+    if raw is not None:
+        return raw.strip().lower() not in {"0", "false", "no", "off"}
+    if is_outer_compile_active():
+        return False
+    return False
 
 
 class MLXStateDictMixin:

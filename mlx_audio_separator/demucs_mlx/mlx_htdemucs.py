@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import math
 import os
+import time
 import typing as tp
+from concurrent.futures import Future
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -14,7 +16,7 @@ from .mlx_hdemucs import HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, pad1d
 from .mlx_layers import Conv1dNCL
 from .mlx_transformer import CrossTransformerEncoder
 from .mlx_utils import MLXStateDictMixin, center_trim
-from .spec_mlx import ispectro, spectro
+from .spec_mlx import CachedSpectralPair
 from .wiener_mlx import wiener
 
 
@@ -180,6 +182,7 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
 
         self.nfft = nfft
         self.hop_length = nfft // 4
+        self._spectral = CachedSpectralPair(n_fft=nfft, hop_length=nfft // 4)
         self.wiener_iters = wiener_iters
         self.end_iters = end_iters
         self.freq_emb = None
@@ -330,12 +333,10 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
 
     def _spec(self, x: mx.array) -> mx.array:
         hl = self.hop_length
-        nfft = self.nfft
         le = int(math.ceil(x.shape[-1] / hl))
         pad = hl // 2 * 3
         x = pad1d(x, (pad, pad + le * hl - x.shape[-1]), mode="reflect")
-        # FIX: Updated to use keyword arguments for new spec_mlx
-        z = spectro(x, n_fft=nfft, hop_length=hl)[..., :-1, :]
+        z = self._spectral.stft(x, output_layout="bfn")[..., :-1, :]
         z = z[..., 2: 2 + le]
         return z
 
@@ -348,8 +349,7 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
             z = mx.pad(z, [(0, 0), (0, 0), (0, 1), (2, 2)])
         pad = hl // 2 * 3
         le = hl * int(math.ceil(length / hl)) + 2 * pad
-        # FIX: Updated to use keyword arguments for new spec_mlx
-        x = ispectro(z, n_fft=self.nfft, hop_length=hl, length=le)
+        x = self._spectral.istft(z, length=le, input_layout="bfn")
         x = x[..., pad: pad + length]
         return x
 
@@ -409,7 +409,7 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
         else:
             # Deterministic path: process samples serially.
             out = mx.stack(
-                [_process_one_sample(mag_out_mx[idx], mix_stft_mx[idx]) for idx in range(B)],
+                [_process_one_sample(mag_out_mx[b], mix_stft_mx[b]) for b in range(B)],
                 axis=0,
             )
 
@@ -431,8 +431,15 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
             )
         return training_length
 
-    def __call__(self, mix: mx.array) -> mx.array:
-        strict_eval = _demucs_strict_eval_enabled()
+    def __call__(
+        self,
+        mix: mx.array,
+        *,
+        ane_future: tp.Optional[Future] = None,
+        precomputed_conv: tp.Optional[mx.array] = None,
+    ) -> mx.array:
+        if _demucs_strict_eval_enabled():
+            mx.eval(mix)
         length = mix.shape[-1]
         length_pre_pad = None
         if self.use_train_segment:
@@ -440,101 +447,231 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
             if mix.shape[-1] < training_length:
                 length_pre_pad = mix.shape[-1]
                 mix = mx.pad(mix, [(0, 0), (0, 0), (0, training_length - length_pre_pad)])
-        z = self._spec(mix)
-        mag = self._magnitude(z)
-        if strict_eval:
-            mx.eval(z, mag)
-        x = mag
+        ane_conv = getattr(self, "_ane_time_conv", None)
+        # Private diagnostic hook: the current FP16 tail fails stem fidelity.
+        ane_tail = getattr(self, "_ane_time_tail", None)
+        ane_tail_future = None
+        if ane_conv is not None and precomputed_conv is None:
+            from .ane import LENGTH
 
-        B, C, Fq, T = x.shape
-        mean = mx.mean(x, axis=(1, 2, 3), keepdims=True)
-        std = mx.std(x, axis=(1, 2, 3), keepdims=True)
-        x = (x - mean) / (1e-5 + std)
-
-        xt = mix
-        meant = mx.mean(xt, axis=(1, 2), keepdims=True)
-        stdt = mx.std(xt, axis=(1, 2), keepdims=True)
-        xt = (xt - meant) / (1e-5 + stdt)
-        if strict_eval:
-            mx.eval(x, xt)
+            if ane_future is None:
+                if mix.shape[-1] != LENGTH or mix.shape[0] not in (1, 2):
+                    raise ValueError(
+                        f"ANE waveform path requires 1 or 2 segments of {LENGTH} samples; "
+                        f"got {tuple(mix.shape)}"
+                    )
+                mx.eval(mix)
+                transfer_start = time.perf_counter()
+                ane_future = ane_conv.submit(mix)
+                ane_conv.transfer_seconds += time.perf_counter() - transfer_start
+        s_side = getattr(self, "_stream_side", None)
+        if s_side is None:
+            s_side = mx.new_stream(mx.default_device())
+            self._stream_side = s_side
 
         saved = []
         saved_t = []
         lengths = []
         lengths_t = []
-        for idx, encode in enumerate(self.encoder):
-            lengths.append(x.shape[-1])
-            inject = None
-            if idx < len(self.tencoder):
-                lengths_t.append(xt.shape[-1])
-                tenc = self.tencoder[idx]
-                xt = tenc(xt)
-                if not tenc.empty:
+
+        if precomputed_conv is not None:
+            from .ane import LENGTH
+
+            with mx.stream(s_side):
+                xt = mix
+                meant = mx.mean(xt, axis=(1, 2), keepdims=True)
+                stdt = mx.std(xt, axis=(1, 2), keepdims=True)
+                xt = (xt - meant) / (1e-5 + stdt)
+                for time_idx, tenc in enumerate(self.tencoder):
+                    lengths_t.append(LENGTH if time_idx == 0 else xt.shape[-1])
+                    xt = tenc(xt, precomputed_conv=precomputed_conv) if time_idx == 0 else tenc(xt)
                     saved_t.append(xt)
-                else:
-                    inject = xt
-            x = encode(x, inject)
-            if idx == 0 and self.freq_emb is not None:
-                frs = mx.arange(x.shape[-2], dtype=mx.int32)
-                emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
-                x = x + self.freq_emb_scale * emb
-            saved.append(x)
-        if strict_eval:
-            mx.eval(x, xt)
+
+            z = self._spec(mix)
+            mag = self._magnitude(z)
+            x = mag
+            B, C, Fq, T = x.shape
+            mean = mx.mean(x, axis=(1, 2, 3), keepdims=True)
+            std = mx.std(x, axis=(1, 2, 3), keepdims=True)
+            x = (x - mean) / (1e-5 + std)
+
+            for idx, encode in enumerate(self.encoder):
+                lengths.append(x.shape[-1])
+                x = encode(x, None)
+                if idx == 0 and self.freq_emb is not None:
+                    frs = mx.arange(x.shape[-2], dtype=mx.int32)
+                    emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
+                    x = x + self.freq_emb_scale * emb
+                saved.append(x)
+        elif ane_future is None:
+            with mx.stream(s_side):
+                xt = mix
+                meant = mx.mean(xt, axis=(1, 2), keepdims=True)
+                stdt = mx.std(xt, axis=(1, 2), keepdims=True)
+                xt = (xt - meant) / (1e-5 + stdt)
+                for tenc in self.tencoder:
+                    lengths_t.append(xt.shape[-1])
+                    xt = tenc(xt)
+                    saved_t.append(xt)
+
+            z = self._spec(mix)
+            mag = self._magnitude(z)
+            x = mag
+            B, C, Fq, T = x.shape
+            mean = mx.mean(x, axis=(1, 2, 3), keepdims=True)
+            std = mx.std(x, axis=(1, 2, 3), keepdims=True)
+            x = (x - mean) / (1e-5 + std)
+
+            for idx, encode in enumerate(self.encoder):
+                lengths.append(x.shape[-1])
+                x = encode(x, None)
+                if idx == 0 and self.freq_emb is not None:
+                    frs = mx.arange(x.shape[-2], dtype=mx.int32)
+                    emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
+                    x = x + self.freq_emb_scale * emb
+                saved.append(x)
+        else:
+            for idx, encode in enumerate(self.encoder):
+                lengths.append(x.shape[-1])
+                inject = None
+                if ane_future is not None and idx == 3:
+                    # First evaluate the independent spectral stages on the GPU.
+                    mx.eval(x)
+                    if ane_tail_future is not None:
+                        wait_start = time.perf_counter()
+                        tail_outputs = ane_tail_future.result()
+                        ane_tail.wait_seconds += time.perf_counter() - wait_start
+                        transfer_start = time.perf_counter()
+                        tail_mx = tuple(mx.asarray(value, copy=False) for value in tail_outputs)
+                        mx.eval(*tail_mx)
+                        ane_tail.transfer_seconds += time.perf_counter() - transfer_start
+                        lengths_t.extend((85_995, 21_499, 5_375))
+                        saved_t.extend(tail_mx)
+                        xt = tail_mx[-1]
+                    else:
+                        wait_start = time.perf_counter()
+                        conv = ane_future.result()
+                        ane_conv.wait_seconds += time.perf_counter() - wait_start
+                        transfer_start = time.perf_counter()
+                        conv_mx = mx.asarray(conv, copy=False)
+                        mx.eval(conv_mx)
+                        ane_conv.transfer_seconds += time.perf_counter() - transfer_start
+                        xt = conv_mx
+                        for time_idx, tenc in enumerate(self.tencoder):
+                            lengths_t.append(LENGTH if time_idx == 0 else xt.shape[-1])
+                            xt = tenc(xt, precomputed_conv=conv_mx) if time_idx == 0 else tenc(xt)
+                            if not tenc.empty:
+                                saved_t.append(xt)
+                            else:
+                                inject = xt
+                elif ane_future is not None and idx < 3:
+                    pass
+                elif idx < len(self.tencoder):
+                    lengths_t.append(xt.shape[-1])
+                    tenc = self.tencoder[idx]
+                    xt = tenc(xt)
+                    if not tenc.empty:
+                        saved_t.append(xt)
+                    else:
+                        inject = xt
+                x = encode(x, inject)
+                if idx == 0 and self.freq_emb is not None:
+                    frs = mx.arange(x.shape[-2], dtype=mx.int32)
+                    emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
+                    x = x + self.freq_emb_scale * emb
+                saved.append(x)
+                if ane_future is not None and ane_tail is not None and idx == 0:
+                    # Finish stage 0 on MLX, then submit the full-length later
+                    # stages while the spectral branch continues on the GPU.
+                    mx.eval(x)
+                    wait_start = time.perf_counter()
+                    conv = ane_future.result()
+                    ane_conv.wait_seconds += time.perf_counter() - wait_start
+                    transfer_start = time.perf_counter()
+                    conv_mx = mx.asarray(conv, copy=False)
+                    mx.eval(conv_mx)
+                    ane_conv.transfer_seconds += time.perf_counter() - transfer_start
+                    lengths_t.append(LENGTH)
+                    xt = self.tencoder[0](xt, precomputed_conv=conv_mx)
+                    saved_t.append(xt)
+                    transfer_start = time.perf_counter()
+                    ane_tail_future = ane_tail.submit(xt)
+                    ane_tail.transfer_seconds += time.perf_counter() - transfer_start
+
 
         if self.crosstransformer:
+            s_side = getattr(self, "_stream_side", None)
+            if s_side is None:
+                s_side = mx.new_stream(mx.default_device())
+                self._stream_side = s_side
+
             if self.bottom_channels:
                 b, c, f, t = x.shape
                 x = x.reshape(b, c, f * t)
+                with mx.stream(s_side):
+                    xt = self.channel_upsampler_t(xt)
                 x = self.channel_upsampler(x)
                 x = x.reshape(b, self.bottom_channels, f, t)
-                xt = self.channel_upsampler_t(xt)
             x, xt = self.crosstransformer(x, xt)
             if self.bottom_channels:
                 x = x.reshape(b, self.bottom_channels, f * t)
+                with mx.stream(s_side):
+                    xt = self.channel_downsampler_t(xt)
                 x = self.channel_downsampler(x)
                 x = x.reshape(b, c, f, t)
-                xt = self.channel_downsampler_t(xt)
-            if strict_eval:
-                mx.eval(x, xt)
 
         offset = self.depth - len(self.tdecoder)
-        for idx, decode in enumerate(self.decoder):
-            skip = saved.pop(-1)
-            x, pre = decode(x, skip, lengths.pop(-1))
-            if idx >= offset:
-                tdec = self.tdecoder[idx - offset]
-                length_t = lengths_t.pop(-1)
-                if tdec.empty:
-                    pre = pre[:, :, 0]
-                    xt, _ = tdec(pre, None, length_t)
-                else:
+        has_empty_tdec = any(t.empty for t in self.tdecoder)
+        S = len(self.sources)
+        if not has_empty_tdec:
+            # Dual-branch decoders: waveform and spectral decoders are independent skip consumers.
+            s_side = getattr(self, "_stream_side", None)
+            if s_side is None:
+                s_side = mx.new_stream(mx.default_device())
+                self._stream_side = s_side
+
+            with mx.stream(s_side):
+                for tdec in self.tdecoder:
+                    length_t = lengths_t.pop(-1)
                     skip_t = saved_t.pop(-1)
                     xt, _ = tdec(xt, skip_t, length_t)
-            if strict_eval:
-                mx.eval(x, xt)
+                actual_length = xt.shape[-1]
+                xt = xt.reshape(B, S, -1, actual_length)
+                xt = xt * stdt[:, None] + meant[:, None]
+
+            for idx, decode in enumerate(self.decoder):
+                skip = saved.pop(-1)
+                x, _ = decode(x, skip, lengths.pop(-1))
+        else:
+            for idx, decode in enumerate(self.decoder):
+                skip = saved.pop(-1)
+                x, pre = decode(x, skip, lengths.pop(-1))
+                if idx >= offset:
+                    tdec = self.tdecoder[idx - offset]
+                    length_t = lengths_t.pop(-1)
+                    if tdec.empty:
+                        pre = pre[:, :, 0]
+                        xt, _ = tdec(pre, None, length_t)
+                    else:
+                        skip_t = saved_t.pop(-1)
+                        xt, _ = tdec(xt, skip_t, length_t)
+            with mx.stream(s_side):
+                actual_length = xt.shape[-1]
+                xt = xt.reshape(B, S, -1, actual_length)
+                xt = xt * stdt[:, None] + meant[:, None]
 
         if len(saved) != 0 or len(lengths_t) != 0 or len(saved_t) != 0:
             raise RuntimeError("Skip connections not fully consumed")
 
-        S = len(self.sources)
         x = x.reshape(B, S, -1, Fq, T)
         x = x * std[:, None] + mean[:, None]
 
         zout = self._mask(z, x)
-        if strict_eval:
-            mx.eval(zout)
         if self.use_train_segment:
             x = self._ispec(zout, training_length)
         else:
             x = self._ispec(zout, length)
-        if strict_eval:
-            mx.eval(x)
 
-        # Reshape xt to match expected output shape
-        actual_length = xt.shape[-1]
-        xt = xt.reshape(B, S, -1, actual_length)
-        xt = xt * stdt[:, None] + meant[:, None]
         # Trim x to match xt length before adding
         x = center_trim(x, xt)
         x = xt + x
@@ -545,6 +682,4 @@ class HTDemucsMLX(MLXStateDictMixin, nn.Module):
             x = x[..., :length]
         if length_pre_pad:
             x = x[..., :length_pre_pad]
-        if strict_eval:
-            mx.eval(x)
         return x

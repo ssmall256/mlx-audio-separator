@@ -252,7 +252,7 @@ class VRSeparator(CommonSeparator):
                 pending_updates += 1
 
                 if pending_updates >= eval_flush_interval:
-                    mx.eval(mask_mx)
+                    mx.async_eval(mask_mx)
                     pending_updates = 0
 
             mx.eval(mask_mx)

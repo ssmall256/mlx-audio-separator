@@ -352,14 +352,15 @@ class Attention(nn.Module):
             q = mx.fast.rope(q, dims=self.dim_head, traditional=True, base=10000.0, scale=1.0, offset=0)
             k = mx.fast.rope(k, dims=self.dim_head, traditional=True, base=10000.0, scale=1.0, offset=0)
 
-        if os.environ.get("MLX_USE_FAST_SDP") == "1":
-            if not Attention._fast_sdp_logged and os.environ.get("MLX_DEBUG") == "1":
-                print("[BSRoformerMLX] Using mx.fast.scaled_dot_product_attention (MLX_USE_FAST_SDP=1)")
-                Attention._fast_sdp_logged = True
-            # Optional fast path; may change numerics vs PyTorch.
+        use_fast_sdp = os.environ.get("MLX_USE_FAST_SDP", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        if use_fast_sdp:
             out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale)
         else:
-            # Manual attention to match PyTorch behavior; mx.fast kernel diverges in practice.
             attn_scores = mx.matmul(q, mx.transpose(k, (0, 1, 3, 2))) * self.scale
             attn_scores = attn_scores - mx.max(attn_scores, axis=-1, keepdims=True)
             attn = mx.softmax(attn_scores, axis=-1)

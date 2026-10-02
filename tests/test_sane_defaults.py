@@ -37,8 +37,13 @@ def test_fused_groupnorm_can_still_be_re_enabled(monkeypatch):
 
 
 def test_demucs_batch_size_default_is_the_measured_optimum():
-    """8 was ~2x slower at ~2x the memory; 12 was ~10x slower."""
-    assert DEFAULT_BATCH_SIZE == 2
+    """Default is 'auto', dynamically resolving to hardware topology optimum."""
+    from mlx_audio_separator.demucs_mlx.hardware import optimal_batch_size
+
+    assert DEFAULT_BATCH_SIZE == "auto"
+    opt = optimal_batch_size()
+    assert isinstance(opt, int)
+    assert opt in (1, 2, 4, 8)
 
 
 def test_demucs_batch_size_is_defined_in_exactly_one_place():

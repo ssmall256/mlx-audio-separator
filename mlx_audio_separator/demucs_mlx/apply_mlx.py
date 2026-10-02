@@ -5,17 +5,19 @@ from __future__ import annotations
 
 import os
 import random
+import time
 import typing as tp
 import warnings
 import weakref
 
 import mlx.core as mx
 
-from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
-from .mlx_utils import center_trim
+from .defaults import DEFAULT_BATCH_SIZE
+from .metal_kernels import fused_overlap_add
+from .mlx_utils import center_trim, is_dconv_compile_enabled, outer_compile_context
 
 _WEIGHT_CACHE: dict[tuple[int, float, str], mx.array] = {}
-
+_COMPILED_FORWARDS: dict[int, tuple[weakref.ReferenceType, dict]] = {}
 
 
 def _deterministic_accumulation_enabled() -> bool:
@@ -23,9 +25,8 @@ def _deterministic_accumulation_enabled() -> bool:
     raw = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_ACCUMULATION")
     if raw is not None:
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-    # Default to strict accumulation in deterministic-fused mode.
-    fused = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED")
-    return str(fused).strip().lower() in {"1", "true", "yes", "on"}
+    raw_fused = os.environ.get("MLX_AUDIO_SEPARATOR_DETERMINISTIC_FUSED", "")
+    return str(raw_fused).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _prefer_per_update_eval(offset_count: int, batch_size: int) -> bool:
@@ -37,6 +38,76 @@ def _demucs_apply_concat_batching_enabled() -> bool:
     """Enable concat-based split batching to avoid temporary 4D stack tensors."""
     raw = os.environ.get("MLX_AUDIO_SEPARATOR_DEMUCS_APPLY_CONCAT_BATCHING", "")
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0 falls back to the eager forward.
+_DEMUCS_COMPILE_ENV = "MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE"
+
+
+def _demucs_compile_enabled() -> bool:
+    raw = os.getenv(_DEMUCS_COMPILE_ENV)
+    if raw is None:
+        raw = os.getenv("DEMUCS_MLX_COMPILE_FORWARD", "1")
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _forward(
+    model: tp.Any,
+    x: mx.array,
+    compile: tp.Optional[bool] = None,
+    precomputed_conv: tp.Optional[mx.array] = None,
+    **kwargs: tp.Any,
+) -> mx.array:
+    """Optionally compile repeated GPU forward shapes after an eager first call."""
+    if compile is None:
+        enabled = _demucs_compile_enabled()
+    else:
+        enabled = bool(compile)
+    def _call(m, tensor):
+        if precomputed_conv is not None:
+            return m(tensor, precomputed_conv=precomputed_conv, **kwargs)
+        return m(tensor, **kwargs)
+
+    if not enabled or kwargs or (getattr(model, "_ane_time_conv", None) is not None and precomputed_conv is None):
+        return _call(model, x)
+
+    with outer_compile_context(True):
+        model_id = id(model)
+        slot = _COMPILED_FORWARDS.get(model_id)
+        if slot is None or slot[0]() is not model:
+            def forget(_ref, *, key=model_id):
+                current = _COMPILED_FORWARDS.get(key)
+                if current is not None and current[0] is _ref:
+                    _COMPILED_FORWARDS.pop(key, None)
+
+            try:
+                ref = weakref.ref(model, forget)
+            except TypeError:
+                return _call(model, x)
+            slot = (ref, {})
+            _COMPILED_FORWARDS[model_id] = slot
+        ref, per_shape = slot
+        conv_key = (tuple(precomputed_conv.shape), str(precomputed_conv.dtype)) if precomputed_conv is not None else None
+        dconv_enabled = "1" if is_dconv_compile_enabled() else "0"
+        key = (tuple(x.shape), str(x.dtype), conv_key, dconv_enabled)
+        if key not in per_shape:
+            # Spectral tuning may evaluate candidate kernels, which cannot happen
+            # inside an MLX compile trace. This useful first call populates it.
+            per_shape[key] = None
+            return _call(model, x)
+
+        compiled = per_shape[key]
+        if compiled is None:
+            if precomputed_conv is not None:
+                compiled = mx.compile(lambda t, c, _ref=ref: _ref()(t, precomputed_conv=c))
+            else:
+                compiled = mx.compile(lambda t, _ref=ref: _ref()(t))
+            per_shape[key] = compiled
+        if precomputed_conv is not None:
+            return compiled(x, precomputed_conv)
+        return compiled(x)
+
+
 
 
 class TensorChunk:
@@ -87,97 +158,33 @@ def tensor_chunk(tensor_or_chunk):
     return TensorChunk(tensor_or_chunk)
 
 
-# MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE=0 falls back to the eager forward.
-_DEMUCS_COMPILE_ENV = "MLX_AUDIO_SEPARATOR_DEMUCS_COMPILE"
-# MLX modules are not hashable, so this is keyed on id() with a weakref held
-# alongside: the weakref both proves the entry still refers to the model we
-# were handed and lets a dead one be evicted, which id() alone cannot do.
-_COMPILED_FORWARDS: "dict[int, tuple[tp.Any, dict]]" = {}
-
-
-def _demucs_compile_enabled() -> bool:
-    raw = os.getenv(_DEMUCS_COMPILE_ENV, "").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
-
-
-def _forward(model: tp.Any, x: mx.array) -> mx.array:
-    """Run the model, compiling the graph once per input shape.
-
-    The Demucs path otherwise runs entirely uncompiled -- `mx.compile` appears
-    only in `wiener_mlx.py`, which htdemucs never reaches. That matters more
-    than it sounds: ablation shows this path is not arithmetic-bound (deleting
-    the cross-transformer, ~75% of the FLOPs, saves 21% of wall clock, and
-    bf16 on it saves nothing), so the win is in fused dispatch, not faster math.
-
-    Measured on an idle M4 through `scripts/perf/ab_harness.py` with a
-    same-config control (noise floor 1.04%), htdemucs, 60 s of audio:
-    **+15.9%**, or +16.8% with the then-used per-batch overlap-add flush.
-    Faster on the very first call too -- 0.671 s against 0.776 s on a 20 s clip
-    with no warmup -- so compilation repays itself inside one separation. The
-    first call at each shape still runs eagerly, because mlx-spectro cannot tune
-    its STFT threadgroup sizes inside a trace; that call's output is used, so
-    the only cost is one chunk going uncompiled.
-
-    Fusion reassociates floating-point adds, so output is not bit-identical:
-    107-114 dB SNR against the eager path across htdemucs, htdemucs_6s and
-    hdemucs_mmi, i.e. error near -76 dBFS. The cache is keyed on shape and
-    `apply_model` emits at most two (full batches plus a trailing partial),
-    so this cannot churn.
-    """
-    if not _demucs_compile_enabled():
-        return model(x)
-    try:
-        ref = weakref.ref(model)
-    except TypeError:          # not weak-referenceable; compile nothing
-        return model(x)
-
-    slot = _COMPILED_FORWARDS.get(id(model))
-    if slot is None or slot[0]() is not model:
-        slot = (ref, {})
-        _COMPILED_FORWARDS[id(model)] = slot
-    per_shape = slot[1]
-
-    key = (tuple(x.shape), str(x.dtype))
-    if key not in per_shape:
-        # The first call at a shape runs eagerly, and the next one compiles.
-        # mlx-spectro picks its STFT/iSTFT threadgroup sizes by timing
-        # candidates, which needs mx.eval -- and MLX forbids mx.eval inside a
-        # compile trace. On a machine with no tuning cache yet, compiling the
-        # very first call therefore leaves it no way to tune. Running that call
-        # eagerly populates the cache at no cost, because its output is used.
-        per_shape[key] = None
-        return model(x)
-
-    fn = per_shape[key]
-    if fn is None:
-        fn = mx.compile(lambda t, _m=model: _m(t))
-        per_shape[key] = fn
-    return fn(x)
-
-
 def apply_model(
     model,
     mix: tp.Union[mx.array, "TensorChunk"],
-    shifts: int = DEFAULT_DEMUCS_SHIFTS,
+    shifts: int = 1,
     split: bool = True,
     overlap: float = 0.25,
     transition_power: float = 1.0,
     progress: bool = False,
     num_workers: int = 0,
     segment: tp.Optional[float] = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: tp.Union[int, str] = DEFAULT_BATCH_SIZE,
     seed: tp.Optional[int] = None,
     _rng: tp.Optional[random.Random] = None,
     *,
     source_index: tp.Optional[int] = None,
+    compile: tp.Optional[bool] = None,
 ):
-    if _rng is None:
-        _rng = random if seed is None else random.Random(int(seed))
-
     progress_enabled = bool(progress)
     if num_workers > 0:
         warnings.warn("num_workers > 0 ignored on MLX.", RuntimeWarning)
         num_workers = 0
+
+    rng: tp.Any
+    if _rng is None:
+        rng = random if seed is None else random.Random(int(seed))
+    else:
+        rng = _rng
 
     # --- BagOfModels Handling ---
     from .mlx_convert import BagOfModelsMLX
@@ -186,25 +193,27 @@ def apply_model(
             if not isinstance(source_index, int) or not 0 <= source_index < len(model.sources):
                 raise ValueError("source_index must identify a source in the model")
             active = [
-                index for index, weights in enumerate(model.weights)
+                index
+                for index, weights in enumerate(model.weights)
                 if weights[source_index] != 0
             ]
             if len(active) != 1:
                 raise ValueError("Selected source requires exactly one contributing model")
             model_index = active[0]
-            # Preserve the chosen model's shift offsets and the caller's RNG state.
+            # Each earlier model would consume one random offset per shift.
+            # Advance the same RNG so the chosen model receives its usual offsets.
             for earlier in model.models[:model_index]:
                 for _ in range(shifts):
-                    _rng.randint(0, int(0.5 * earlier.samplerate))
+                    rng.randint(0, int(0.5 * earlier.samplerate))
             result = apply_model(
                 model.models[model_index], mix, shifts, split, overlap,
                 transition_power, progress, num_workers, segment, batch_size,
-                seed=seed, _rng=_rng,
+                seed=seed, _rng=rng, compile=compile,
             )
-            for later in model.models[model_index + 1:]:
+            for later in model.models[model_index + 1 :]:
                 for _ in range(shifts):
-                    _rng.randint(0, int(0.5 * later.samplerate))
-            selected = result[:, source_index:source_index + 1]
+                    rng.randint(0, int(0.5 * later.samplerate))
+            selected = result[:, source_index : source_index + 1]
             weight = float(model.weights[model_index][source_index])
             return selected * weight / float(model.totals[source_index])
         totals = [0.0] * len(model.sources)
@@ -214,7 +223,8 @@ def apply_model(
         for sub_model, model_weights in zip(model.models, model.weights):
             res = apply_model(
                 sub_model, mix, shifts, split, overlap, transition_power,
-                progress, num_workers, segment, batch_size, seed, _rng
+                progress, num_workers, segment, batch_size, seed=seed, _rng=rng,
+                compile=compile,
             )
             out = mx.array(res)
 
@@ -236,44 +246,42 @@ def apply_model(
                 elif out.shape[-1] > min_length:
                     out = out[..., :min_length]
                 estimates = estimates + out
+            mx.async_eval(estimates)
 
         # Vectorized normalization by totals.
         denom = mx.array(totals, dtype=estimates.dtype).reshape(1, -1, 1, 1)
         estimates = estimates / denom
+        mx.eval(estimates)  # Final sync eval for BagOfModels path
         return estimates
 
     if source_index is not None:
         raise ValueError("Selected source requires a model bag")
 
     # --- Standard Inference ---
-    if isinstance(mix, TensorChunk):
-        # Materialize the chunk view (respecting offset and length)
-        mix_array = mix.padded(mix.length)
-    else:
-        mix_array = mix
-    batch, channels, length = mix_array.shape
+    mix_chunk = tensor_chunk(mix)
+    batch, channels, length = mix_chunk.shape
+    mix_dtype = mix_chunk.tensor.dtype
 
     if shifts:
         max_shift = int(0.5 * model.samplerate)
-        mix_chunk = TensorChunk(mix_array)
         padded_mix = mix_chunk.padded(length + 2 * max_shift)
+        padded_chunk = TensorChunk(padded_mix)
         out = 0.0
         for _ in range(shifts):
-            offset = _rng.randint(0, max_shift)
-            shifted = TensorChunk(padded_mix, offset, length + max_shift - offset)
+            offset = rng.randint(0, max_shift)
+            shifted = TensorChunk(padded_chunk, offset, length + max_shift - offset)
             shifted_out = apply_model(
                 model, shifted, 0, split, overlap, transition_power,
-                False, num_workers, segment, batch_size, seed, _rng
+                False, num_workers, segment, batch_size, seed=seed, _rng=rng,
+                compile=compile,
             )
             out = out + shifted_out[..., max_shift - offset:]
+            mx.async_eval(out)
         out = out / shifts
+        mx.eval(out)  # Final sync eval after all shifts
         return out
 
     if split:
-        deterministic_accum = _deterministic_accumulation_enabled()
-        out = mx.zeros((batch, len(model.sources), channels, length), dtype=mix_array.dtype)
-        sum_weight = mx.zeros((length,), dtype=mix_array.dtype)
-
         if segment is None:
             segment = model.segment
         segment_length = int(model.samplerate * segment)
@@ -281,7 +289,7 @@ def apply_model(
         offsets = list(range(0, length, stride))
 
         # Prepare Weight
-        cache_key = (segment_length, float(transition_power), mix_array.dtype)
+        cache_key = (segment_length, float(transition_power), mix_dtype)
         weight = _WEIGHT_CACHE.get(cache_key)
         if weight is None:
             weight = mx.concatenate([
@@ -290,7 +298,6 @@ def apply_model(
             ], axis=0)
             weight = (weight / mx.max(weight)) ** transition_power
             _WEIGHT_CACHE[cache_key] = weight
-        weight_view = weight.reshape(1, 1, 1, -1)
 
         progress_bar = None
         if progress_enabled:
@@ -298,114 +305,138 @@ def apply_model(
             progress_bar = tqdm(total=len(offsets), desc="segments", unit="seg", leave=False)
 
         # --- BATCHING STATE ---
-        batch_inputs = []
-        batch_indices = []
-        # True per-update evaluation wins once there are enough overlapping
-        # segments to make the growing accumulator graph costly. Paired runs
-        # measured it slower at 30-45 s, faster at 50-60 s. With the default
-        # 7.8 s segment and 25% overlap, nine offsets begin near 50 seconds.
-        eval_per_update = deterministic_accum or _prefer_per_update_eval(len(offsets), batch_size)
+        if batch_size is None or str(batch_size).lower() == "auto":
+            from .hardware import optimal_batch_size
+            effective_batch_size = optimal_batch_size()
+        else:
+            effective_batch_size = int(batch_size)
+            if effective_batch_size <= 0:
+                raise ValueError("batch_size must be > 0.")
+
         if hasattr(model, "valid_length"):
             std_valid_len = model.valid_length(segment_length)
         else:
             std_valid_len = segment_length
 
-        def flush_batch():
-            nonlocal batch_inputs, batch_indices, out, sum_weight
-            if not batch_inputs:
-                return
+        # Check if ANE worker is present for pipelined prefetching
+        ane_worker = getattr(model, "_ane_time_conv", None)
+        if ane_worker is None and hasattr(model, "models") and len(model.models) > 0:
+            ane_worker = getattr(model.models[0], "_ane_time_conv", None)
 
-            b_seg = len(batch_inputs)
-            if _demucs_apply_concat_batching_enabled():
-                # Concat directly to flattened (Batch_Segments * Audio_Batch, Channels, Time).
-                b_audio, channels, length = batch_inputs[0].shape
-                batch_tensor_flat = mx.concatenate(batch_inputs, axis=0)
-            else:
-                # 1. Stack: (Batch_Segments, Audio_Batch, Channels, Time)
-                batch_tensor = mx.stack(batch_inputs)
-                # 2. Reshape: Flatten Segments into Batch -> (Total_Batch, Channels, Time)
-                _, b_audio, channels, length = batch_tensor.shape
-                batch_tensor_flat = batch_tensor.reshape(b_seg * b_audio, channels, length)
+        batches_indices = []
+        current = []
+        for i, offset in enumerate(offsets):
+            this_chunk_len = min(segment_length, length - offset)
+            current.append((i, offset, this_chunk_len))
+            if len(current) >= effective_batch_size:
+                batches_indices.append(current)
+                current = []
+        if current:
+            batches_indices.append(current)
 
-            # 3. Run Model (Standard 3D Input)
-            batch_out_flat = _forward(model, batch_tensor_flat)
+        compile_enabled = (
+            bool(compile)
+            if compile is not None
+            else os.getenv("DEMUCS_MLX_COMPILE_FORWARD", "0").strip().lower() not in {
+                "0", "false", "no", "off",
+            }
+        )
+        pad_tail = os.getenv("DEMUCS_MLX_PAD_TAIL", "0").strip().lower() not in {
+            "0", "false", "no", "off",
+        }
 
-            # 4. Unflatten: (Batch_Segments, Audio_Batch, Sources, Channels, Time)
-            _, sources, out_c, out_t = batch_out_flat.shape
-            batch_out = batch_out_flat.reshape(b_seg, b_audio, sources, out_c, out_t)
+        def prepare_batch(group):
+            inputs = []
+            for i, offset, this_chunk_len in group:
+                chunk = TensorChunk(mix_chunk, offset, this_chunk_len)
+                padded = chunk.padded(std_valid_len)
+                inputs.append(padded)
+            actual_count = len(inputs)
+            if compile_enabled and pad_tail and len(batches_indices) > 1 and actual_count < effective_batch_size:
+                while len(inputs) < effective_batch_size:
+                    inputs.append(inputs[-1])
+            stacked = mx.stack(inputs)
+            b_seg, b_audio, ch, seg_len = stacked.shape
+            flat = stacked.reshape(b_seg * b_audio, ch, seg_len)
+            if ane_worker is not None:
+                mx.eval(flat)
+            return flat, group, actual_count, b_seg, b_audio
 
-            for i, idx in enumerate(batch_indices):
-                chunk_out = center_trim(batch_out[i], segment_length)
+        all_chunk_outputs = []
+        with outer_compile_context(compile_enabled):
+            try:
+                next_batch_data = None
+                next_fut = None
+                if batches_indices:
+                    next_batch_data = prepare_batch(batches_indices[0])
+                    if ane_worker is not None:
+                        next_fut = ane_worker.submit(next_batch_data[0])
 
-                offset = offsets[idx]
-                end = offset + segment_length
+                for b_idx in range(len(batches_indices)):
+                    flat, group, actual_count, b_seg, b_audio = next_batch_data
+                    curr_fut = next_fut
 
-                update = weight_view * chunk_out
-                out = out.at[:, :, :, offset:end].add(update)
-                sum_weight = sum_weight.at[offset:end].add(weight)
-                if eval_per_update:
-                    mx.eval(out, sum_weight)
-
-                if progress_bar is not None:
-                    progress_bar.update(1)
-
-            batch_inputs = []
-            batch_indices = []
-            if not eval_per_update:
-                mx.eval(out, sum_weight)
-
-        try:
-            for i, offset in enumerate(offsets):
-                this_chunk_len = min(segment_length, length - offset)
-                chunk = TensorChunk(mix_array, offset, this_chunk_len)
-
-                # Batch only standard-sized chunks
-                if this_chunk_len == segment_length:
-                    padded = chunk.padded(std_valid_len)
-                    batch_inputs.append(padded)
-                    batch_indices.append(i)
-
-                    if len(batch_inputs) >= batch_size:
-                        flush_batch()
-                else:
-                    # Flush pending batch
-                    flush_batch()
-
-                    # Run odd-sized chunk individually
-                    if hasattr(model, "valid_length"):
-                        valid_len = model.valid_length(this_chunk_len)
+                    if b_idx + 1 < len(batches_indices):
+                        next_batch_data = prepare_batch(batches_indices[b_idx + 1])
+                        if ane_worker is not None:
+                            next_fut = ane_worker.submit(next_batch_data[0])
                     else:
-                        valid_len = this_chunk_len
-                    padded = chunk.padded(valid_len)
+                        next_batch_data = None
+                        next_fut = None
 
-                    # FIX: Pass 'padded' directly. It is already (Batch, Channels, Time).
-                    chunk_out = _forward(model, padded)
-                    chunk_out = center_trim(chunk_out, this_chunk_len)
+                    conv_mx = None
+                    if curr_fut is not None:
+                        wait_start = time.perf_counter()
+                        conv = curr_fut.result()
+                        ane_worker.wait_seconds += time.perf_counter() - wait_start
+                        transfer_start = time.perf_counter()
+                        conv_mx = mx.asarray(conv, copy=False)
+                        ane_worker.transfer_seconds += time.perf_counter() - transfer_start
 
-                    end = offset + this_chunk_len
-                    weight_slice = weight[:this_chunk_len]
-                    w = weight_slice.reshape(1, 1, 1, -1)
-                    update = w * chunk_out
-                    out = out.at[:, :, :, offset:end].add(update)
-                    sum_weight = sum_weight.at[offset:end].add(weight_slice)
-                    mx.eval(out, sum_weight)
+                    batch_out_flat = _forward(model, flat, compile=compile, precomputed_conv=conv_mx)
+                    _, sources, out_c, out_t = batch_out_flat.shape
+                    batch_out = batch_out_flat.reshape(b_seg, b_audio, sources, out_c, out_t)
+
+                    if actual_count == b_seg and all(cl == out_t for _, _, cl in group):
+                        all_chunk_outputs.append(batch_out)
+                    else:
+                        for i in range(actual_count):
+                            idx, offset, this_chunk_len = group[i]
+                            chunk_out = batch_out[i : i + 1]
+                            if this_chunk_len < out_t:
+                                chunk_trimmed = center_trim(batch_out[i], this_chunk_len)
+                                pad_r = out_t - this_chunk_len
+                                chunk_out = mx.pad(
+                                    chunk_trimmed, [(0, 0), (0, 0), (0, 0), (0, pad_r)]
+                                )[None, ...]
+                            all_chunk_outputs.append(chunk_out)
+
                     if progress_bar is not None:
-                        progress_bar.update(1)
+                        progress_bar.update(actual_count)
 
-            flush_batch()
-        finally:
-            if progress_bar is not None:
-                progress_bar.close()
+                    mx.async_eval(batch_out)
+                    eval_flush_interval = int(os.getenv("DEMUCS_MLX_EVAL_FLUSH_INTERVAL", "8"))
+                    if eval_flush_interval > 0 and (b_idx + 1) % eval_flush_interval == 0:
+                        mx.eval(batch_out)
+            finally:
+                if progress_bar is not None:
+                    progress_bar.close()
 
-        if bool(mx.any(sum_weight == 0).item()):
-            raise ValueError("sum_weight has zeros; check segment and overlap settings")
-
-        out = out / sum_weight
+        if all_chunk_outputs:
+            stacked_frames = (
+                mx.concatenate(all_chunk_outputs, axis=0)
+                if len(all_chunk_outputs) > 1
+                else all_chunk_outputs[0]
+            )
+            out = fused_overlap_add(stacked_frames, weight, stride, length)
+        else:
+            out = mx.zeros((batch, len(model.sources), channels, length), dtype=mix_dtype)
+        mx.eval(out)
         return out
+
 
     # No split path
     valid_length = model.valid_length(length) if hasattr(model, "valid_length") else length
-    mix_chunk = TensorChunk(mix_array)
     padded_mix = mix_chunk.padded(valid_length)
-    out = _forward(model, padded_mix)
+    out = _forward(model, padded_mix, compile=compile)
     return center_trim(out, length)

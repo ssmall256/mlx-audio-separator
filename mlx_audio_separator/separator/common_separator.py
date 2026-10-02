@@ -204,12 +204,12 @@ class CommonSeparator:
                 self.input_encoding = "pcm16"
 
             # Load with mlx-audio-io, resample to target sample rate
-            audio_mx, sr = mac.load(str(mix), sr=self.sample_rate, dtype="float32")
+            audio_mx, sr = mac.load(
+                str(mix), sr=self.sample_rate, dtype="float32", layout="channels_first"
+            )
 
-            # Convert to numpy and transpose to (channels, frames)
+            # Convert to numpy (already channels, frames)
             mix = np.array(audio_mx, copy=False)
-            if mix.ndim == 2:
-                mix = mix.T  # (frames, channels) -> (channels, frames)
             self.logger.debug(f"Audio loaded. Sample rate: {sr}, Audio shape: {mix.shape}")
         else:
             self.logger.debug("Using provided mix array.")

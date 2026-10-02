@@ -45,8 +45,7 @@ def resample_mx(
         x: Input MLX array with shape (channels, frames) or (batch, channels, frames)
         orig_freq: Original sample rate
         new_freq: Target sample rate
-        quality: Resampling quality ("fastest", "low", "medium", "high", "best",
-                 "soxr_vhq", "default")
+        quality: Resampling quality ("fastest", "low", "medium", "high", "best", "default")
 
     Returns:
         Resampled MLX array with same shape layout
@@ -73,6 +72,5 @@ def resample_mx(
     else:
         raise ValueError(f"Expected 2D or 3D array, got shape {original_shape}")
 
-    # x is (channels, frames); mac.resample expects (frames, channels)
-    resampled = mac.resample(mx.transpose(x, (1, 0)), orig_freq, new_freq, quality=quality)
-    return mx.transpose(resampled, (1, 0))
+    # x is (channels, frames)
+    return mac.resample(x, orig_freq, new_freq, quality=quality, layout="channels_first")

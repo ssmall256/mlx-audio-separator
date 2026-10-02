@@ -4,13 +4,13 @@ from __future__ import annotations
 import typing as tp
 from pathlib import Path
 
+import numpy as np
+
 from .defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from .mlx_registry import MLX_MODEL_REGISTRY
 
 
 class Separator:
-    _UNSET = object()
-
     def __init__(
         self,
         model: str = "htdemucs",
@@ -19,13 +19,16 @@ class Separator:
         overlap: float = 0.25,
         split: bool = True,
         segment: tp.Optional[float] = None,
+        seed: tp.Optional[int] = None,
         jobs: int = 0,
         progress: bool = False,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-        seed: tp.Optional[int] = None,
+        batch_size: tp.Optional[int | str] = DEFAULT_BATCH_SIZE,
         callback: tp.Optional[tp.Callable[[dict], None]] = None,
         callback_arg: tp.Optional[dict] = None,
+        ane_time_encoder: bool = False,
         stem: tp.Optional[str] = None,
+        compile: tp.Optional[bool] = None,
+        auto_tune: bool = False,
     ):
         if model not in MLX_MODEL_REGISTRY:
             known = ", ".join(sorted(MLX_MODEL_REGISTRY.keys()))
@@ -42,32 +45,86 @@ class Separator:
             raise ValueError("overlap must be in [0, 1).")
         if segment is not None and float(segment) <= 0:
             raise ValueError("segment must be > 0 when provided.")
-        if int(batch_size) <= 0:
+        if auto_tune or batch_size is None or batch_size == "auto":
+            from .hardware import optimal_batch_size
+            effective_batch_size = optimal_batch_size()
+        elif int(batch_size) <= 0:
             raise ValueError("batch_size must be > 0.")
+        else:
+            effective_batch_size = int(batch_size)
         if stem is not None and model != "htdemucs_ft":
             raise ValueError("Single-stem acceleration only supports htdemucs_ft")
+        if ane_time_encoder:
+            if model != "htdemucs":
+                raise ValueError("ANE waveform path only supports the default htdemucs model")
+            if segment is not None and float(segment) != 7.8:
+                raise ValueError("ANE waveform path requires 7.8-second segments")
+            if not split:
+                raise ValueError("ANE waveform path requires split=True")
+            if int(effective_batch_size) <= 0:
+                raise ValueError("ANE waveform path requires batch_size > 0")
         if seed is not None:
-            seed = int(seed)
+            try:
+                seed = int(seed)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("seed must be an integer or None.") from exc
         self.model_name = model
         self.shifts = int(shifts)
         self.overlap = float(overlap)
         self.split = split
         self.segment = float(segment) if segment is not None else None
-        self.batch_size = int(batch_size)
         self.seed = seed
+        self.batch_size = effective_batch_size
         self.jobs = jobs
         self.progress = progress
         self.callback = callback
         self.callback_arg = callback_arg
+        self._ane_requested = bool(ane_time_encoder)
+        self.compile = compile
+        self._closed = False
 
         from .model_converter import get_mlx_model
         self._model = get_mlx_model(model)
         if hasattr(self._model, "eval"):
             self._model.eval()
+        for sub in getattr(self._model, "models", [self._model]):
+            if hasattr(sub, "eval"):
+                sub.eval()
+            ct = getattr(sub, "crosstransformer", None)
+            if ct is not None:
+                for layer in getattr(ct, "layers", []) + getattr(ct, "layers_t", []):
+                    for a in ("attn", "cross_attn"):
+                        m = getattr(layer, a, None)
+                        if m is not None and hasattr(m, "_ensure_fused"):
+                            m._ensure_fused()
         if stem is not None and stem not in self._model.sources:
             raise ValueError(f"Unknown stem {stem!r}; available: {', '.join(self._model.sources)}")
         self.stem = stem
         self._source_index = self._model.sources.index(stem) if stem is not None else None
+        self._ane_worker = None
+        if ane_time_encoder:
+            from .ane import WaveformConv
+
+            if len(self._model.models) != 1:
+                raise RuntimeError("ANE waveform path requires a single HTDemucs model")
+            self._ane_worker = WaveformConv()
+            self._model.models[0]._ane_time_conv = self._ane_worker
+
+    def close(self) -> None:
+        self._closed = True
+        if self._ane_worker is not None:
+            self._ane_worker.close()
+            if getattr(self._model.models[0], "_ane_time_conv", None) is self._ane_worker:
+                del self._model.models[0]._ane_time_conv
+            self._ane_worker = None
+
+    def __enter__(self):
+        if self._closed:
+            raise RuntimeError("Separator is closed")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
     @property
     def samplerate(self) -> int:
@@ -88,8 +145,9 @@ class Separator:
         overlap: tp.Optional[float] = None,
         split: tp.Optional[bool] = None,
         segment: tp.Optional[float] = None,
+        seed: tp.Optional[int] = None,
         progress: tp.Optional[bool] = None,
-        seed: tp.Union[object, int, None] = _UNSET,
+        compile: tp.Optional[bool] = None,
     ) -> None:
         if shifts is not None:
             if int(shifts) < 0:
@@ -107,10 +165,15 @@ class Separator:
             if seg_f <= 0:
                 raise ValueError("segment must be > 0 when provided.")
             self.segment = seg_f
+        if seed is not None:
+            try:
+                self.seed = int(seed)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("seed must be an integer or None.") from exc
         if progress is not None:
             self.progress = progress
-        if seed is not self._UNSET:
-            self.seed = None if seed is None else int(seed)
+        if compile is not None:
+            self.compile = bool(compile)
 
     def _prepare_wav(self, wav):  # -> np.ndarray
         import numpy as np
@@ -156,6 +219,8 @@ class Separator:
         *,
         return_mx: bool = False,
     ) -> tp.Tuple[tp.Any, tp.Dict[str, tp.Any]]:
+        if self._ane_requested and self._closed:
+            raise RuntimeError("ANE Separator is closed")
         import mlx.core as mx
         import numpy as np
 
@@ -179,6 +244,7 @@ class Separator:
             batch_size=self.batch_size,
             seed=self.seed,
             source_index=self._source_index,
+            compile=self.compile,
         )
         mx.eval(estimates)
         stems_mx = estimates[0]
@@ -197,12 +263,82 @@ class Separator:
         *,
         return_mx: bool = False,
     ) -> tp.Tuple[tp.Any, tp.Dict[str, tp.Any]]:
-        import mlx.core as mx
-        import mlx_audio_io as mac
+        from .audio import load_audio
 
-        audio_mx, sr = mac.load(str(path), sr=self.samplerate, dtype="float32")
-        wav_mx = mx.transpose(audio_mx, (1, 0))
-        return self.separate_tensor(wav_mx, return_mx=return_mx)
+        audio_mx, sr = load_audio(path, sr=self.samplerate, dtype="float32")
+        return self.separate_tensor(audio_mx, return_mx=return_mx)
+
+    def separate(
+        self,
+        audio_or_path: tp.Union[str, Path, tp.Any],
+        *,
+        output_dir: tp.Optional[tp.Union[str, Path]] = None,
+        return_mx: bool = False,
+        async_write: bool = True,
+        filename_format: str = "{stem}.wav",
+        clip: tp.Literal["rescale", "clamp", "tanh", "none"] = "rescale",
+        bits_per_sample: tp.Literal[16, 24, 32] = 16,
+        as_float: bool = False,
+    ) -> tp.Union[tp.Tuple[tp.Any, tp.Dict[str, tp.Any]], tp.Dict[str, Path]]:
+        """Unified separation entry point accepting file path or in-memory audio tensor.
+
+        Args:
+            audio_or_path: Path to audio file or in-memory tensor (mx.array / np.ndarray).
+            output_dir: Optional destination directory to persist separated stems.
+            return_mx: If True and output_dir is None, return MLX arrays instead of NumPy.
+            async_write: If True and output_dir is provided, write stems asynchronously.
+            filename_format: Format string for saved stems, e.g. "{stem}.wav" or "{track}_{stem}.wav".
+            clip: Clipping mode ("rescale", "clamp", "tanh", "none").
+            bits_per_sample: Bit depth for saved audio (16, 24, 32).
+            as_float: Save as float32 audio.
+
+        Returns:
+            If output_dir is None: (mix, {stem_name: stem_audio})
+            If output_dir is provided: {stem_name: saved_path}
+        """
+        from .audio import AsyncAudioWriter, save_audio
+
+        if isinstance(audio_or_path, (str, Path)):
+            track_name = Path(audio_or_path).stem
+            wav, stems = self.separate_audio_file(audio_or_path, return_mx=return_mx or (output_dir is not None))
+        else:
+            track_name = "track"
+            wav, stems = self.separate_tensor(audio_or_path, return_mx=return_mx or (output_dir is not None))
+
+        if output_dir is None:
+            return wav, stems
+
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        saved_paths: dict[str, Path] = {}
+
+        if async_write:
+            with AsyncAudioWriter(
+                clip=clip,
+                bits_per_sample=bits_per_sample,
+                as_float=as_float,
+            ) as writer:
+                for stem_name, stem_wav in stems.items():
+                    filename = filename_format.format(stem=stem_name, track=track_name)
+                    dest = out_dir / filename
+                    stem_host = np.ascontiguousarray(np.asarray(stem_wav), dtype=np.float32)
+                    writer.submit(stem_host, dest, self.samplerate)
+                    saved_paths[stem_name] = dest
+        else:
+            for stem_name, stem_wav in stems.items():
+                filename = filename_format.format(stem=stem_name, track=track_name)
+                dest = out_dir / filename
+                save_audio(
+                    stem_wav,
+                    dest,
+                    samplerate=self.samplerate,
+                    clip=clip,
+                    bits_per_sample=bits_per_sample,
+                    as_float=as_float,
+                )
+                saved_paths[stem_name] = dest
+
+        return saved_paths
 
 
 def save_audio(*args, **kwargs):

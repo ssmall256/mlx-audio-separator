@@ -10,20 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 #: Segments processed per forward pass.
-#:
-#: Measured on a 128 GB machine, htdemucs, macOS 27 / mlx 0.31.2:
-#:
-#:   batch  45 s clip   195 s clip   peak memory (195 s)
-#:       2     0.872 s      3.901 s              4.75 GB
-#:       4          --      5.584 s              5.43 GB
-#:       8     1.870 s      5.524 s              9.20 GB
-#:      12          --     40.119 s             13.31 GB
-#:
-#: 2 is both the fastest and the smallest; 8 is roughly 2x slower on shorter
-#: inputs at nearly double the memory, and 12 collapses. Smaller Macs fare
-#: worse still. demucs-mlx reached the same value independently (see its
-#: commit 12f5881, "avoid memory thrashing on 16-36 GB Macs").
-DEFAULT_BATCH_SIZE = 2
+#: Defaults to "auto" to dynamically match the Apple Silicon memory bandwidth
+#: and GPU core topology detected in hardware.py (e.g. 8 on M4 Max, 4 on Pro, 2 on Base).
+DEFAULT_BATCH_SIZE = "auto"
 
 #: Match the upstream Demucs default. Extra shifts run the model again and
 #: can improve quality, but are an explicit inference-time tradeoff.

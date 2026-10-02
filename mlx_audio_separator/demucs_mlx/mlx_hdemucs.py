@@ -13,7 +13,6 @@ import mlx.nn as nn
 
 from .mlx_demucs import DConv
 from .mlx_layers import (
-    GELUNCL,
     GLUNCL,
     Conv1dNCL,
     Conv2dNCHW,
@@ -24,9 +23,10 @@ from .mlx_layers import (
     GroupNormNCHW,
     GroupNormNCL,
     Identity,
+    _use_fused_gn_glu,
 )
 from .mlx_utils import MLXStateDictMixin
-from .spec_mlx import ispectro, spectro
+from .spec_mlx import CachedSpectralPair
 from .wiener_mlx import wiener
 
 
@@ -145,8 +145,9 @@ class HEncLayer(nn.Module):
         if self.empty:
             return
         # Use fused GroupNorm+GELU when norm is enabled
-        self._fused_norm1 = bool(norm)
-        if norm:
+        use_fused = bool(norm) and _use_fused_gn_glu()
+        self._fused_norm1 = use_fused
+        if use_fused:
             self.norm1 = FusedGroupNormGELU(norm_groups, chout)
         else:
             self.norm1 = norm_fn(chout)
@@ -157,7 +158,7 @@ class HEncLayer(nn.Module):
                 self.rewrite = Conv2dNCHW(chout, 2 * chout, 1 + 2 * context, 1, context)
             else:
                 self.rewrite = Conv1dNCL(chout, 2 * chout, 1 + 2 * context, 1, context)
-            if norm:
+            if use_fused:
                 self.norm2 = FusedGroupNormGLU(norm_groups, 2 * chout)
                 self._fused_norm2 = True
             else:
@@ -166,15 +167,20 @@ class HEncLayer(nn.Module):
         if dconv:
             self.dconv = DConv(chout, **dconv_kw)
 
-    def __call__(self, x, inject=None):
-        if not self.freq and x.ndim == 4:
-            B, C, Fr, T = x.shape
-            x = x.reshape(B, -1, T)
-        if not self.freq:
-            le = x.shape[-1]
-            if le % self.stride != 0:
-                x = pad1d(x, (0, self.stride - (le % self.stride)))
-        y = self.conv(x)
+    def __call__(self, x, inject=None, precomputed_conv=None):
+        if precomputed_conv is None:
+            if not self.freq and x.ndim == 4:
+                B, C, Fr, T = x.shape
+                x = x.reshape(B, -1, T)
+            if not self.freq:
+                le = x.shape[-1]
+                if le % self.stride != 0:
+                    x = pad1d(x, (0, self.stride - (le % self.stride)))
+            y = self.conv(x)
+        else:
+            if self.freq:
+                raise ValueError("precomputed_conv is only supported for the waveform path")
+            y = precomputed_conv
         if self.empty:
             return y
         if inject is not None:
@@ -184,7 +190,7 @@ class HEncLayer(nn.Module):
         if self._fused_norm1:
             y = self.norm1(y)
         else:
-            y = GELUNCL()(self.norm1(y))
+            y = nn.gelu(self.norm1(y))
         if self.dconv:
             if self.freq:
                 B, C, Fr, T = y.shape
@@ -259,7 +265,7 @@ class HDecLayer(nn.Module):
                     self.rewrite = Conv2dNCHW(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context])
             else:
                 self.rewrite = Conv1dNCL(chin, 2 * chin, 1 + 2 * context, 1, context)
-            if norm:
+            if norm and _use_fused_gn_glu():
                 self.norm1 = FusedGroupNormGLU(norm_groups, 2 * chin)
                 self._fused_norm1 = True
             else:
@@ -297,7 +303,7 @@ class HDecLayer(nn.Module):
         else:
             z = z[..., self.pad:self.pad + length]
         if not self.last:
-            z = GELUNCL()(z)
+            z = nn.gelu(z)
         return z, y
 
 
@@ -358,7 +364,7 @@ class MultiWrap(nn.Module):
                 start = limit
         out = mx.concatenate(outs, axis=2)
         if not self.conv and not last:
-            out = GELUNCL()(out)
+            out = nn.gelu(out)
         if self.conv:
             return out
         return out, None
@@ -454,6 +460,7 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
 
         self.nfft = nfft
         self.hop_length = nfft // 4
+        self._spectral = CachedSpectralPair(n_fft=nfft, hop_length=nfft // 4)
         self.wiener_iters = wiener_iters
         self.end_iters = end_iters
         self.freq_emb = None
@@ -575,7 +582,6 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
 
     def _spec(self, x: mx.array) -> mx.array:
         hl = self.hop_length
-        nfft = self.nfft
         if self.hybrid:
             le = int(math.ceil(x.shape[-1] / hl))
             pad = hl // 2 * 3
@@ -584,8 +590,7 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
             else:
                 x = pad1d(x, (pad, pad + le * hl - x.shape[-1]))
         
-        # FIX: Added keywords for spec_mlx
-        z = spectro(x, n_fft=nfft, hop_length=hl)[..., :-1, :]
+        z = self._spectral.stft(x, output_layout="bfn")[..., :-1, :]
         
         if self.hybrid:
             z = z[..., 2:2 + le]
@@ -609,16 +614,14 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
             else:
                 le = hl * int(math.ceil(length / hl))
             
-            # FIX: Added keywords for spec_mlx
-            x = ispectro(z, n_fft=self.nfft, hop_length=hl, length=le)
-            
+            x = self._spectral.istft(z, length=le, input_layout="bfn")
+
             if not self.hybrid_old:
                 x = x[..., pad:pad + length]
             else:
                 x = x[..., :length]
         else:
-            # FIX: Added keywords for spec_mlx
-            x = ispectro(z, n_fft=self.nfft, hop_length=hl, length=length)
+            x = self._spectral.istft(z, length=length, input_layout="bfn")
         return x
 
     def _magnitude(self, z: mx.array) -> mx.array:
@@ -672,7 +675,7 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
         else:
             # Deterministic path: process samples serially.
             out = mx.stack(
-                [_process_one_sample(mag_out_mx[idx], mix_stft_mx[idx]) for idx in range(B)],
+                [_process_one_sample(mag_out_mx[b], mix_stft_mx[b]) for b in range(B)],
                 axis=0,
             )
 
@@ -683,14 +686,13 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
         return out.astype(init)
 
     def __call__(self, mix: mx.array) -> mx.array:
-        strict_eval = _demucs_strict_eval_enabled()
         x = mix
+        if _demucs_strict_eval_enabled():
+            mx.eval(x)
         length = x.shape[-1]
 
         z = self._spec(mix)
         mag = self._magnitude(z)
-        if strict_eval:
-            mx.eval(z, mag)
         x = mag
 
         B, C, Fq, T = x.shape
@@ -703,10 +705,6 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
             meant = mx.mean(xt, axis=(1, 2), keepdims=True)
             stdt = mx.std(xt, axis=(1, 2), keepdims=True)
             xt = (xt - meant) / (1e-5 + stdt)
-            if strict_eval:
-                mx.eval(x, xt)
-        elif strict_eval:
-            mx.eval(x)
 
         saved = []
         saved_t = []
@@ -729,11 +727,6 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
                 emb = self.freq_emb(frs).transpose(1, 0)[None, :, :, None]
                 x = x + self.freq_emb_scale * emb
             saved.append(x)
-        if strict_eval:
-            if self.hybrid:
-                mx.eval(x, xt)
-            else:
-                mx.eval(x)
 
         x = mx.zeros_like(x)
         if self.hybrid:
@@ -753,11 +746,6 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
                 else:
                     skip_t = saved_t.pop(-1)
                     xt, _ = tdec(xt, skip_t, length_t)
-            if strict_eval:
-                if self.hybrid:
-                    mx.eval(x, xt)
-                else:
-                    mx.eval(x)
 
         if len(saved) != 0 or len(lengths_t) != 0 or len(saved_t) != 0:
             raise RuntimeError("Skip connections not fully consumed")
@@ -767,24 +755,10 @@ class HDemucsMLX(MLXStateDictMixin, nn.Module):
         x = x * std[:, None] + mean[:, None]
 
         zout = self._mask(z, x)
-        if strict_eval:
-            mx.eval(zout)
         x = self._ispec(zout, length)
-        if strict_eval:
-            mx.eval(x)
 
         if self.hybrid:
-            xt_length = xt.shape[-1]
-            xt = xt.reshape(B, S, -1, xt_length)
+            xt = xt.reshape(B, S, -1, length)
             xt = xt * stdt[:, None] + meant[:, None]
-            # Temporal and spectral paths may differ in length due to
-            # encoder/decoder stride rounding; trim to the shorter one.
-            from .mlx_utils import center_trim
-            if xt_length > x.shape[-1]:
-                xt = center_trim(xt, x.shape[-1])
-            elif x.shape[-1] > xt_length:
-                x = center_trim(x, xt_length)
             x = xt + x
-        if strict_eval:
-            mx.eval(x)
         return x

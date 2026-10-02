@@ -103,6 +103,84 @@ class MyGroupNorm(nn.Module):
         return self.gn(x)
 
 
+class FastMultiHeadAttention(nn.MultiHeadAttention):
+    def __init__(self, dims: int, num_heads: int, bias: bool = True):
+        super().__init__(dims, num_heads, bias=bias)
+        self._fused_initialized = False
+
+    def _ensure_fused(self):
+        if getattr(self, "_fused_initialized", False):
+            return
+        C = self.query_proj.weight.shape[1]
+        self.qkv_proj = nn.Linear(C, 3 * C)
+        qkv_w = mx.concatenate(
+            [self.query_proj.weight, self.key_proj.weight, self.value_proj.weight], axis=0
+        ).astype(mx.float16)
+        qkv_b = mx.concatenate(
+            [self.query_proj.bias, self.key_proj.bias, self.value_proj.bias], axis=0
+        ).astype(mx.float16)
+        self.qkv_proj.weight = qkv_w
+        self.qkv_proj.bias = qkv_b
+
+        self.kv_proj = nn.Linear(C, 2 * C)
+        kv_w = mx.concatenate(
+            [self.key_proj.weight, self.value_proj.weight], axis=0
+        ).astype(mx.float16)
+        kv_b = mx.concatenate(
+            [self.key_proj.bias, self.value_proj.bias], axis=0
+        ).astype(mx.float16)
+        self.kv_proj.weight = kv_w
+        self.kv_proj.bias = kv_b
+
+        self.query_proj_fp16 = nn.Linear(C, C)
+        self.query_proj_fp16.weight = self.query_proj.weight.astype(mx.float16)
+        self.query_proj_fp16.bias = self.query_proj.bias.astype(mx.float16)
+
+        self.key_proj_fp16 = nn.Linear(C, C)
+        self.key_proj_fp16.weight = self.key_proj.weight.astype(mx.float16)
+        self.key_proj_fp16.bias = self.key_proj.bias.astype(mx.float16)
+
+        self.value_proj_fp16 = nn.Linear(C, C)
+        self.value_proj_fp16.weight = self.value_proj.weight.astype(mx.float16)
+        self.value_proj_fp16.bias = self.value_proj.bias.astype(mx.float16)
+
+        self.out_proj_fp16 = nn.Linear(C, C)
+        self.out_proj_fp16.weight = self.out_proj.weight.astype(mx.float16)
+        self.out_proj_fp16.bias = self.out_proj.bias.astype(mx.float16)
+
+        self._fused_initialized = True
+
+    def __call__(self, queries: mx.array, keys: mx.array, values: mx.array, mask=None) -> mx.array:
+        self._ensure_fused()
+        heads = self.num_heads
+        orig_dtype = queries.dtype
+        q_fp16 = queries.astype(mx.float16)
+
+        if queries is keys and keys is values:
+            qkv = self.qkv_proj(q_fp16)
+            C = queries.shape[-1]
+            q, k, v = mx.split(qkv, [C, 2 * C], axis=-1)
+        elif keys is values:
+            q = self.query_proj_fp16(q_fp16)
+            k_fp16 = keys.astype(mx.float16)
+            kv = self.kv_proj(k_fp16)
+            C = keys.shape[-1]
+            k, v = mx.split(kv, [C], axis=-1)
+        else:
+            q = self.query_proj_fp16(q_fp16)
+            k = self.key_proj_fp16(keys.astype(mx.float16))
+            v = self.value_proj_fp16(values.astype(mx.float16))
+
+        q = mx.unflatten(q, -1, (heads, -1)).transpose(0, 2, 1, 3)
+        k = mx.unflatten(k, -1, (heads, -1)).transpose(0, 2, 1, 3)
+        v = mx.unflatten(v, -1, (heads, -1)).transpose(0, 2, 1, 3)
+        scale = math.sqrt(1 / q.shape[-1])
+        output = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+        output = output.transpose(0, 2, 1, 3).flatten(-2, -1)
+        res = self.out_proj_fp16(output)
+        return res.astype(orig_dtype)
+
+
 class TransformerEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -118,7 +196,7 @@ class TransformerEncoderLayer(nn.Module):
         init_values: float = 1e-4,
     ):
         super().__init__()
-        self.attn = nn.MultiHeadAttention(d_model, nhead, bias=True)
+        self.attn = FastMultiHeadAttention(d_model, nhead, bias=True)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
         self.dropout1 = nn.Dropout(dropout)
@@ -169,7 +247,7 @@ class CrossTransformerEncoderLayer(nn.Module):
         init_values: float = 1e-4,
     ):
         super().__init__()
-        self.cross_attn = nn.MultiHeadAttention(d_model, nhead, bias=True)
+        self.cross_attn = FastMultiHeadAttention(d_model, nhead, bias=True)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
         self.dropout1 = nn.Dropout(dropout)
@@ -387,21 +465,30 @@ class CrossTransformerEncoder(nn.Module):
         x = x + self.weight_pos_embed * pos_emb_2d
 
         B, C, T2 = xt.shape
-        xt = xt.transpose(0, 2, 1)
-        pos_emb = self._get_pos_embedding(T2, B, C)
-        pos_emb = pos_emb.transpose(1, 0, 2)
-        xt = self.norm_in_t(xt)
-        xt = xt + self.weight_pos_embed * pos_emb
+        s_side = getattr(self, "_stream_side", None)
+        if s_side is None:
+            s_side = mx.new_stream(mx.default_device())
+            self._stream_side = s_side
+
+        with mx.stream(s_side):
+            xt = xt.transpose(0, 2, 1)
+            pos_emb = self._get_pos_embedding(T2, B, C)
+            pos_emb = pos_emb.transpose(1, 0, 2)
+            xt = self.norm_in_t(xt)
+            xt = xt + self.weight_pos_embed * pos_emb
 
         for idx in range(self.num_layers):
             if idx % 2 == self.classic_parity:
+                with mx.stream(s_side):
+                    xt = self.layers_t[idx](xt)
                 x = self.layers[idx](x)
-                xt = self.layers_t[idx](xt)
             else:
                 old_x = x
+                with mx.stream(s_side):
+                    xt = self.layers_t[idx](xt, old_x)
                 x = self.layers[idx](x, xt)
-                xt = self.layers_t[idx](xt, old_x)
 
+        with mx.stream(s_side):
+            xt = xt.transpose(0, 2, 1)
         x = x.reshape(B, T1, Fr, C).transpose(0, 3, 2, 1)
-        xt = xt.transpose(0, 2, 1)
         return x, xt

@@ -28,6 +28,21 @@ def _seed_arg(value: str):
         ) from None
 
 
+def _parse_demucs_batch_size(value: str):
+    """Parse --demucs_batch_size, accepting an integer or 'auto'."""
+    if value is None or str(value).strip().lower() == "auto":
+        return "auto"
+    try:
+        val = int(value)
+        if val <= 0:
+            raise argparse.ArgumentTypeError(f"demucs_batch_size must be > 0, got {value!r}")
+        return val
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"demucs_batch_size must be an integer or 'auto', got {value!r}"
+        ) from None
+
+
 def main():
     logger = logging.getLogger(__name__)
     log_handler = logging.StreamHandler()
@@ -222,7 +237,18 @@ def main():
         ),
     )
     demucs_params.add_argument("--demucs_overlap", type=float, default=0.25, help="Overlap ratio (default: %(default)s).")
-    demucs_params.add_argument("--demucs_batch_size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size (default: %(default)s).")
+    demucs_params.add_argument(
+        "--demucs_batch_size",
+        type=_parse_demucs_batch_size,
+        default=DEFAULT_BATCH_SIZE,
+        help="Batch size (default: %(default)s).",
+    )
+    demucs_params.add_argument(
+        "--demucs_compile",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Compile repeated forward graph chunks (default: %(default)s).",
+    )
     demucs_params.add_argument(
         "--demucs_segments_enabled", type=bool, default=True,
         help="Enable segment-wise processing (default: %(default)s).",
@@ -361,6 +387,7 @@ def main():
             "overlap": args.demucs_overlap,
             "batch_size": args.demucs_batch_size,
             "segments_enabled": args.demucs_segments_enabled,
+            "compile": args.demucs_compile,
         },
         "mdx_params": {
             "segment_size": args.mdx_segment_size,
