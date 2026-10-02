@@ -21,7 +21,7 @@ record.
 | Demucs batch size | **`auto`** | Per machine, from interleaved sweeps of batch 1-8 (htdemucs, 216 s): M4 Pro and 32-core M4 Max run 3 (1.5-1.9% faster than 2 on an idle M4 Pro, 4 ties for 0.8 GB more); 40-core M4 Max with >= 64 GB runs 8 (~6% faster than 2, measured under desktop load); smaller chips run 2. Chunks are spread evenly over the batches the target implies. `--demucs_batch_size N` fixes it. |
 | Demucs shifts | **1** | Matches upstream Demucs and the standalone project. Use `--demucs_shifts 2` to spend a second full pass for the shift-averaging quality tradeoff. |
 | Demucs shift seed | **random** | As upstream: with one shift the offset still varies per run. `--demucs_seed <int>` makes runs reproduce. |
-| Demucs attention precision | **fp32** | Matches upstream Demucs at 81-87 dB SNR. `--demucs_attention_precision fp16` is 3.8% faster (idle M4 Pro, 216 s) and matches at 72-79 dB. |
+| Demucs attention precision | **fp16** | Only the attention kernel runs in half precision; projections stay fp32. Within 0.5 dB of fp32 against upstream and 2.7% faster (gated, 40-core M4 Max, 120 s). `--demucs_attention_precision fp32` selects fp32. |
 | VR batch size | **2** | Batch 1 is never fastest: 2.975 s vs 3.488 s on a 45 s clip, 16.364 s vs 17.946 s on a 195 s one. Batch 4 edges it on long inputs but costs another 2.5 GB. |
 | Roformer/MDXC precision | **fp32** | bf16 measures no faster on current hardware (within a 0.04% noise floor) and costs ~78 dB SNR, so fp32 is the better default. `--precision bf16` remains available. |
 | Cache clear policy | **`deferred`** | ~6-17% faster end to end with bit-identical output, for ~70 MB more peak RSS. |
@@ -63,7 +63,7 @@ results; they exist for benchmarking, parity investigations and debugging.
 | `MLX_AUDIO_SEPARATOR_DEMUCS_STRICT_EVAL` | off | Inserts `mx.eval` barriers through the forward pass. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_ISTFT_ALLOW_FUSED` | on | Fused iSTFT. Measured effect on output is negligible. |
 | `MLX_AUDIO_SEPARATOR_DEMUCS_WIENER_USE_VMAP` | on | vmap-parallel Wiener filtering. `hdemucs`-family only. |
-| `MLX_AUDIO_SEPARATOR_DEMUCS_ATTENTION_FP16` | off | fp16 transformer attention, as `--demucs_attention_precision fp16`. |
+| `MLX_AUDIO_SEPARATOR_DEMUCS_ATTENTION_FP16` | on | `0` selects the fp32 attention kernel, as `--demucs_attention_precision fp32`. |
 
 ### Roformer / MDXC
 

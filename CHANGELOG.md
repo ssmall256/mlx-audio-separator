@@ -62,9 +62,11 @@ All notable changes to this project are documented in this file.
   implies; it no longer drops to batch 2 whenever 2 divides the chunk count.
 - Demucs overlap-add is streamed through the fused Metal kernel: peak memory on
   a 21.7-minute track is 6.66 GB end to end, against 9.46 GB in 0.1.18.
-- Demucs transformer attention computes in fp32 by default (81-87 dB against
-  upstream). `--demucs_attention_precision fp16` is 3.8% faster and matches at
-  72-79 dB.
+- Demucs attention runs its kernel in fp16 with fp32 projections. The previous
+  fp16 path also rounded the projections and matched upstream at 72-79 dB; the
+  kernel alone matches within 0.5 dB of fp32 and is about 3% faster than fp32.
+  `--demucs_attention_precision fp32` (or
+  `MLX_AUDIO_SEPARATOR_DEMUCS_ATTENTION_FP16=0`) selects fp32.
 - RoFormer `--single_stem` runs only the heads and inverse STFTs of the
   requested stem when the model outputs that stem, with bit-identical output.
 - Demucs separation, including `python -m mlx_audio_separator.demucs_mlx`,

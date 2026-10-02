@@ -253,8 +253,8 @@ def main():
         choices=["fp32", "fp16"],
         default=None,
         help=(
-            "Demucs transformer attention precision: fp32 (default; matches upstream "
-            "Demucs to 81-87 dB) or fp16 (~4%% faster, 72-79 dB)."
+            "Demucs attention kernel precision: fp16 (default; projections stay fp32, ~3%% faster "
+            "than fp32 and within 0.5 dB of it against upstream) or fp32."
         ),
     )
     demucs_params.add_argument(
