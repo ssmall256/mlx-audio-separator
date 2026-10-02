@@ -249,6 +249,15 @@ def main():
         help="Compile repeated forward graph chunks (default: %(default)s).",
     )
     demucs_params.add_argument(
+        "--demucs_attention_precision",
+        choices=["fp32", "fp16"],
+        default=None,
+        help=(
+            "Demucs transformer attention precision: fp32 (default; matches upstream "
+            "Demucs to 81-87 dB) or fp16 (~4%% faster, 72-79 dB)."
+        ),
+    )
+    demucs_params.add_argument(
         "--demucs_segments_enabled", type=bool, default=True,
         help="Enable segment-wise processing (default: %(default)s).",
     )
@@ -387,6 +396,7 @@ def main():
             "batch_size": args.demucs_batch_size,
             "segments_enabled": args.demucs_segments_enabled,
             "compile": args.demucs_compile,
+            "attention_precision": args.demucs_attention_precision,
         },
         "mdx_params": {
             "segment_size": args.mdx_segment_size,

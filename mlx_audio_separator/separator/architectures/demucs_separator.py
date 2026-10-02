@@ -4,7 +4,6 @@ import os
 import time
 
 import mlx.core as mx
-import numpy as np
 
 from mlx_audio_separator.demucs_mlx.defaults import DEFAULT_BATCH_SIZE, DEFAULT_DEMUCS_SHIFTS
 from mlx_audio_separator.separator.common_separator import CommonSeparator
@@ -33,6 +32,7 @@ class DemucsSeparator(CommonSeparator):
             self.batch_size = int(raw_batch_size)
         self.compile = arch_config.get("compile", arch_config.get("demucs_compile", None))
         self.seed = arch_config.get("seed")
+        self.attention_precision = arch_config.get("attention_precision")
         self.experimental_demucs_wiener_preallocate_output = bool(
             self.performance_params.get("experimental_demucs_wiener_preallocate_output", False)
         )
@@ -53,11 +53,6 @@ class DemucsSeparator(CommonSeparator):
                 self.experimental_demucs_wiener_preallocate_output,
             ),
             (
-                "MLX_AUDIO_SEPARATOR_DEMUCS_APPLY_CONCAT_BATCHING",
-                "experimental_demucs_apply_concat_batching",
-                self.experimental_demucs_apply_concat_batching,
-            ),
-            (
                 "MLX_AUDIO_SEPARATOR_GN_GLU_MULTIGROUP",
                 "experimental_demucs_gn_glu_multigroup",
                 self.experimental_demucs_gn_glu_multigroup,
@@ -65,6 +60,12 @@ class DemucsSeparator(CommonSeparator):
         ):
             apply_experimental_env(
                 env_var, enabled, explicit=key in explicit, logger=self.logger
+            )
+
+        if self.experimental_demucs_apply_concat_batching:
+            self.logger.warning(
+                "experimental_demucs_apply_concat_batching has no effect: Demucs overlap-add "
+                "no longer stacks per-batch tensors."
             )
 
         self.logger.debug(
@@ -101,6 +102,7 @@ class DemucsSeparator(CommonSeparator):
                 else None
             ),
             compile=self.compile,
+            attention_precision=self.attention_precision,
         )
 
         self.logger.info(
@@ -195,19 +197,12 @@ class DemucsSeparator(CommonSeparator):
             t0 = time.perf_counter()
             if target_sr != model_sr:
                 stem_data = mac.resample(stem_data, model_sr, target_sr, layout="channels_first")
-            if isinstance(stem_data, mx.array):
-                mx.eval(stem_data)
-                stem_out = stem_data
-            else:
-                stem_np = np.asarray(stem_data)
-                if stem_np.ndim == 2:
-                    stem_np = stem_np.T
-                stem_out = stem_np
+            mx.eval(stem_data)
             self.add_perf_time("postprocess_s", time.perf_counter() - t0)
 
             stem_output_path = self.get_stem_output_path(stem_name, custom_output_names)
             self.logger.info(f"Writing stem '{stem_name}' to {stem_output_path}")
-            self.write_audio(stem_output_path, stem_out)
+            self.write_audio(stem_output_path, stem_data)
 
             if self.output_dir:
                 full_path = os.path.join(self.output_dir, stem_output_path)

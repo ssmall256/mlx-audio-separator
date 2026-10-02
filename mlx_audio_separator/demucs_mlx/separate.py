@@ -8,7 +8,6 @@ import threading
 import typing as tp
 from pathlib import Path
 
-import numpy as np
 from tqdm import tqdm
 
 from .audio import AsyncAudioWriter as _AsyncWriter
@@ -156,11 +155,12 @@ def _separate_one(
         if stage is not None:
             stage.update(1)
 
-        # Transfer once to host, then slice NumPy arrays for writer workers.
-        stems = np.asarray(estimates[0])
+        # Pure MLX zero-copy stem handoff to async writer.
+        # Materialize slice views on producer thread before worker dispatch.
+        stems = [estimates[0][i] for i in range(len(source_names))]
+        mx.eval(*stems)
         for stem_idx, stem_path in enumerate(stem_paths):
-            stem = np.ascontiguousarray(stems[stem_idx], dtype=np.float32)
-            writer.submit(stem, stem_path, samplerate=model.samplerate)
+            writer.submit(stems[stem_idx], stem_path, samplerate=model.samplerate)
             if verbose:
                 print(f"Wrote: {stem_path}")
         if stage is not None:
@@ -215,6 +215,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prefetch-tracks", type=int, default=2,
                         help="Number of prefetched decoded tracks")
     parser.add_argument("--no-split", action="store_true", help="Disable chunked inference")
+    parser.add_argument(
+        "--attention",
+        choices=["fp32", "fp16"],
+        default=None,
+        help=(
+            "Transformer attention precision: fp32 (default; matches upstream Demucs to "
+            "81-87 dB) or fp16 (~4%% faster, 72-79 dB). MLX_AUDIO_SEPARATOR_DEMUCS_ATTENTION_FP16=1 also "
+            "selects fp16."
+        ),
+    )
     parser.add_argument(
         "--ane-time-encoder", action="store_true",
         help="run the first HTDemucs waveform convolution on the Neural Engine",
@@ -282,6 +292,12 @@ def main(argv: tp.Optional[tp.Sequence[str]] = None) -> int:
     model = get_mlx_model(args.name)
     if hasattr(model, "eval"):
         model.eval()
+    from .mlx_transformer import resolve_attention_dtype, set_attention_dtype
+
+    attention_dtype = resolve_attention_dtype(args.attention)
+    for sub in getattr(model, "models", [model]):
+        if hasattr(sub, "named_modules"):
+            set_attention_dtype(sub, attention_dtype)
     if args.stem is not None and args.stem not in model.sources:
         raise SystemExit(f"Unknown stem {args.stem!r}; available: {', '.join(model.sources)}")
     ane_worker = None
