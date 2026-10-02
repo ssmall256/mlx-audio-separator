@@ -502,7 +502,8 @@ class MelBandRoformerMLX(nn.Module):
 
             pending_updates += H
             if pending_updates >= eval_flush_interval:
-                mx.eval(out_acc, w_acc)
+                async_eval_fn = getattr(mx, "async_eval", mx.eval)
+                async_eval_fn(out_acc, w_acc)
                 pending_updates = 0
 
         mx.eval(out_acc, w_acc)

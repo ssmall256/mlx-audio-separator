@@ -524,7 +524,8 @@ class MDXCSeparator(CommonSeparator):
             pending_updates += 1
 
             if pending_updates >= eval_flush_interval:
-                mx.eval(result_mx, counter_mx)
+                async_eval_fn = getattr(mx, "async_eval", mx.eval)
+                async_eval_fn(result_mx, counter_mx)
                 pending_updates = 0
 
         mx.eval(result_mx, counter_mx)
@@ -702,8 +703,12 @@ class MDXCSeparator(CommonSeparator):
 
                 def maybe_eval(force=False):
                     nonlocal pending_updates, result, counter
-                    if force or pending_updates >= eval_flush_interval:
+                    if force:
                         mx.eval(result, counter)
+                        pending_updates = 0
+                    elif pending_updates >= eval_flush_interval:
+                        async_eval_fn = getattr(mx, "async_eval", mx.eval)
+                        async_eval_fn(result, counter)
                         pending_updates = 0
 
                 def run_batch(start_idx: int, current_batch_size: int, mix_mx=mix_mx):
