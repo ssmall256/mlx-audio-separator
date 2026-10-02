@@ -11,11 +11,10 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+from .audio import AsyncAudioWriter as _AsyncWriter
 from .defaults import DEFAULT_BATCH_SIZE
 from .mlx_registry import MLX_MODEL_REGISTRY
 
-
-from .audio import AsyncAudioWriter as _AsyncWriter
 
 def _list_models() -> int:
     for name in sorted(MLX_MODEL_REGISTRY.keys()):

@@ -149,6 +149,7 @@ def test_write_audio_mlx_array_zero_copy(tmp_path, monkeypatch):
 
 def test_async_stem_writer_mlx_array_zero_copy(tmp_path, monkeypatch):
     import mlx.core as mx
+
     from mlx_audio_separator.utils.performance import AsyncStemWriter
 
     saved_types = []

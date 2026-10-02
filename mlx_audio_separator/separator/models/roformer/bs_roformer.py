@@ -939,11 +939,19 @@ class BSRoformerMLX(nn.Module):
                 use_grouped=self.experimental_grouped_mask_estimator,
             ))
 
+        self.target_stem_idx: Optional[int] = None
+
         if os.environ.get("MLX_ENABLE_COMPILE") == "1":
             # Compile only the transformer-heavy subgraph to maximize kernel fusion.
             self._forward_transformers = mx.compile(self._forward_transformers)
 
-    def __call__(self, raw_audio):
+    def set_target_stem(self, stem_idx: Optional[int]) -> None:
+        """Set target stem index for single-stem extraction (or None for all stems)."""
+        if stem_idx is not None and not (0 <= stem_idx < self.num_stems):
+            raise ValueError(f"Invalid stem_idx {stem_idx} for model with {self.num_stems} stems")
+        self.target_stem_idx = stem_idx
+
+    def __call__(self, raw_audio, stem_idx: Optional[int] = None):
         """
         Forward pass: raw audio -> STFT -> process -> apply masks -> iSTFT -> separated audio.
 
@@ -996,7 +1004,9 @@ class BSRoformerMLX(nn.Module):
 
 
         # Process through model to get masks
-        masks = self._forward_model(stft_repr)
+        target_idx = stem_idx if stem_idx is not None else getattr(self, "target_stem_idx", None)
+        effective_num_stems = 1 if target_idx is not None else self.num_stems
+        masks = self._forward_model(stft_repr, stem_idx=target_idx)
 
         # Before applying masks, add stem dimension to STFT (matching PyTorch)
         # stft_repr: (b, f*c, t, 2) -> (b, 1, f*c, t, 2)
@@ -1025,10 +1035,10 @@ class BSRoformerMLX(nn.Module):
             input_layout="bfn",
         )
         recon_audio = rearrange(recon_audio, "(b n c) t -> b n c t",
-                               b=batch_size, n=self.num_stems, c=self.audio_channels)
+                               b=batch_size, n=effective_num_stems, c=self.audio_channels)
 
         # Handle single stem case
-        if self.num_stems == 1:
+        if effective_num_stems == 1:
             recon_audio = rearrange(recon_audio, "b 1 c t -> b c t")
 
         return recon_audio
@@ -1279,16 +1289,26 @@ class BSRoformerMLX(nn.Module):
 
         return x
 
-    def _estimate_masks(self, x):
+    def _estimate_masks(self, x, stem_idx: Optional[int] = None):
         """
         Generate masks from transformer output (kept uncompiled).
 
         Args:
             x: Transformer output (batch, time, bands, dim)
+            stem_idx: Optional single stem index to estimate. If None, checks
+                      self.target_stem_idx or estimates all stems.
 
         Returns:
             masks: Complex masks (batch, num_stems, freq*channels, time, 2)
         """
+        target_idx = stem_idx if stem_idx is not None else getattr(self, "target_stem_idx", None)
+        if target_idx is not None:
+            estimator = getattr(self, f'mask_estimators_{target_idx}')
+            mask_output = estimator(x)
+            masks = mx.expand_dims(mask_output, axis=1)
+            masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
+            return masks
+
         masks = []
         for i in range(self.num_stems):
             estimator = getattr(self, f'mask_estimators_{i}')
@@ -1298,12 +1318,13 @@ class BSRoformerMLX(nn.Module):
         masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
         return masks
 
-    def _forward_model_impl(self, stft_repr):
+    def _forward_model_impl(self, stft_repr, stem_idx: Optional[int] = None):
         """
         Process STFT representation through transformer to generate masks.
 
         Args:
             stft_repr: STFT representation (batch, freq*channels, time, 2)
+            stem_idx: Optional single stem index to estimate.
 
         Returns:
             masks: Complex masks (batch, num_stems, freq*channels, time, 2)
@@ -1312,33 +1333,40 @@ class BSRoformerMLX(nn.Module):
         x = rearrange(stft_repr, "b f t c -> b t (f c)")
         x = self.band_split(x)
         x = self._forward_transformers(x)
-        return self._estimate_masks(x)
+        return self._estimate_masks(x, stem_idx=stem_idx)
 
-    def _forward_model(self, stft_repr):
+    def _forward_model(self, stft_repr, stem_idx: Optional[int] = None):
         """Forward-model wrapper with optional shape-keyed full-graph compile cache."""
-        if not self.experimental_compile_fullgraph:
-            return self._forward_model_impl(stft_repr)
+        target_idx = stem_idx if stem_idx is not None else getattr(self, "target_stem_idx", None)
 
-        shape_key = tuple(int(v) for v in stft_repr.shape)
+        def _invoke_impl(stft_in, stem=target_idx):
+            if stem is not None:
+                return self._forward_model_impl(stft_in, stem_idx=stem)
+            return self._forward_model_impl(stft_in)
+
+        if not self.experimental_compile_fullgraph:
+            return _invoke_impl(stft_repr, target_idx)
+
+        shape_key = (tuple(int(v) for v in stft_repr.shape), target_idx)
         if shape_key in self._forward_model_compile_disabled:
-            return self._forward_model_impl(stft_repr)
+            return _invoke_impl(stft_repr, target_idx)
 
         compiled_fn = self._forward_model_compile_cache.get(shape_key)
         if compiled_fn is None:
             compile_fn = getattr(mx, "compile", None)
             if not callable(compile_fn):
                 self._forward_model_compile_disabled.add(shape_key)
-                return self._forward_model_impl(stft_repr)
+                return _invoke_impl(stft_repr, target_idx)
 
-            def _compiled_forward(stft_in):
-                return self._forward_model_impl(stft_in)
+            def _compiled_forward(stft_in, _stem=target_idx):
+                return _invoke_impl(stft_in, _stem)
 
             try:
                 compiled_fn = compile_fn(_compiled_forward, shapeless=False)
                 self._forward_model_compile_cache[shape_key] = compiled_fn
             except Exception:
                 self._forward_model_compile_disabled.add(shape_key)
-                return self._forward_model_impl(stft_repr)
+                return _invoke_impl(stft_repr, target_idx)
 
         try:
             return compiled_fn(stft_repr)
@@ -1346,7 +1374,7 @@ class BSRoformerMLX(nn.Module):
             # Keep failures isolated by shape and fall back safely.
             self._forward_model_compile_disabled.add(shape_key)
             self._forward_model_compile_cache.pop(shape_key, None)
-            return self._forward_model_impl(stft_repr)
+            return _invoke_impl(stft_repr, target_idx)
 
 
 def create_compiled_model(*args, **kwargs):

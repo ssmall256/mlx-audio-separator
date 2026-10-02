@@ -140,6 +140,7 @@ class MDXCSeparator(CommonSeparator):
             model_path=self.model_path,
             config=self.model_data,
         )
+        self.model = self.model_run
         if self.experimental_compile_model_forward:
             compile_fn = getattr(mx, "compile", None)
             if callable(compile_fn):
@@ -558,7 +559,26 @@ class MDXCSeparator(CommonSeparator):
         else:
             effective_override_model_segment_size = bool(override_model_segment_size)
 
-        num_stems = 1 if target_instrument else len(instruments)
+        # Check if single stem extraction is requested for a multi-stem model
+        target_stem_idx = None
+        target_model = getattr(self, "model", None) or getattr(self, "model_run", None)
+        single_stem_req = getattr(self, "output_single_stem", None)
+        if single_stem_req and instruments and target_model is not None and hasattr(target_model, "set_target_stem"):
+            single_lower = single_stem_req.strip().lower()
+            for idx, inst in enumerate(instruments):
+                if inst.strip().lower() == single_lower:
+                    target_stem_idx = idx
+                    break
+
+        if target_stem_idx is not None and target_model is not None and hasattr(target_model, "set_target_stem"):
+            target_model.set_target_stem(target_stem_idx)
+            num_stems = 1
+            self.logger.info(
+                f"Configured single-stem extraction for '{single_stem_req}' (stem_idx={target_stem_idx}). "
+                "Evaluating only target mask estimator and running single-stem iSTFT/OLA."
+            )
+        else:
+            num_stems = 1 if target_instrument else len(instruments)
         if num_stems <= 0:
             raise ValueError("Invalid model metadata: unable to determine output stems.")
 
@@ -765,6 +785,15 @@ class MDXCSeparator(CommonSeparator):
         gc.collect()
 
         # Build output dictionary
+        if target_stem_idx is not None:
+            if target_model is not None and hasattr(target_model, "set_target_stem"):
+                target_model.set_target_stem(None)
+            target_name = instruments[target_stem_idx]
+            primary = inferenced_outputs_np[0]
+            if primary.shape[1] != orig_mix.shape[1]:
+                primary = match_array_shapes(primary, orig_mix)
+            return {target_name: primary}
+
         if num_stems > 1:
             sources = {}
             for key, value in zip(instruments, inferenced_outputs_np):

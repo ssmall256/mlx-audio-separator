@@ -281,14 +281,22 @@ class MelBandRoformerMLX(nn.Module):
                 ),
             )
 
+        self.target_stem_idx: Optional[int] = None
+
         if os.environ.get("MLX_ENABLE_COMPILE") == "1":
             self._forward_transformers = mx.compile(self._forward_transformers)
+
+    def set_target_stem(self, stem_idx: Optional[int]) -> None:
+        """Set target stem index for single-stem extraction (or None for all stems)."""
+        if stem_idx is not None and not (0 <= stem_idx < self.num_stems):
+            raise ValueError(f"Invalid stem_idx {stem_idx} for model with {self.num_stems} stems")
+        self.target_stem_idx = stem_idx
 
     # ------------------------------------------------------------------
     # Forward pass
     # ------------------------------------------------------------------
 
-    def __call__(self, raw_audio):
+    def __call__(self, raw_audio, stem_idx: Optional[int] = None):
         """Forward pass: raw audio -> STFT -> mel gather -> transform -> scatter -> iSTFT.
 
         Args:
@@ -335,7 +343,9 @@ class MelBandRoformerMLX(nn.Module):
         )
 
         # Gather mel-band frequencies and get masks
-        masks = self._forward_model(stft_repr)
+        target_idx = stem_idx if stem_idx is not None else getattr(self, "target_stem_idx", None)
+        effective_num_stems = 1 if target_idx is not None else self.num_stems
+        masks = self._forward_model(stft_repr, stem_idx=target_idx)
         # masks: (b, n_stems, num_gathered_freqs, T, 2)
 
         # Scatter-add masks back to full spectrum
@@ -377,11 +387,11 @@ class MelBandRoformerMLX(nn.Module):
             recon_audio,
             "(b n c) t -> b n c t",
             b=batch_size,
-            n=self.num_stems,
+            n=effective_num_stems,
             c=self.audio_channels,
         )
 
-        if self.num_stems == 1:
+        if effective_num_stems == 1:
             recon_audio = rearrange(recon_audio, "b 1 c t -> b c t")
 
         return recon_audio
@@ -558,8 +568,15 @@ class MelBandRoformerMLX(nn.Module):
         x = self.final_norm(x)
         return x
 
-    def _estimate_masks(self, x):
+    def _estimate_masks(self, x, stem_idx: Optional[int] = None):
         """Generate masks from transformer output."""
+        target_idx = stem_idx if stem_idx is not None else getattr(self, "target_stem_idx", None)
+        if target_idx is not None:
+            estimator = getattr(self, f"mask_estimators_{target_idx}")
+            masks = mx.expand_dims(estimator(x), axis=1)
+            masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
+            return masks
+
         masks = []
         for i in range(self.num_stems):
             estimator = getattr(self, f"mask_estimators_{i}")
@@ -568,10 +585,10 @@ class MelBandRoformerMLX(nn.Module):
         masks = rearrange(masks, "b n t (f c) -> b n f t c", c=2)
         return masks
 
-    def _forward_model(self, stft_repr):
+    def _forward_model(self, stft_repr, stem_idx: Optional[int] = None):
         """Gather mel freqs -> band split -> transform -> estimate masks."""
         x_gathered = mx.take(stft_repr, self.freq_indices, axis=1)
         x = rearrange(x_gathered, "b f t c -> b t (f c)")
         x = self.band_split(x)
         x = self._forward_transformers(x)
-        return self._estimate_masks(x)
+        return self._estimate_masks(x, stem_idx=stem_idx)

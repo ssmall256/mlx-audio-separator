@@ -2,7 +2,6 @@
 
 import mlx.core as mx
 import numpy as np
-import pytest
 
 from mlx_audio_separator.separator.models.roformer.bs_roformer import Attention
 
